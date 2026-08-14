@@ -1,1 +1,1650 @@
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  #qb-root { font-family: 'VT323', monospace; box-sizing: border-box; }
+  .qb-pixel { font-family: 'Press Start 2P', monospace; }
+  .qb-btn {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 11px;
+    border: 3px solid #000;
+    box-shadow: 3px 3px 0 rgba(0,0,0,0.5);
+    padding: 10px 14px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+  .qb-btn:active { box-shadow: 1px 1px 0 rgba(0,0,0,0.5); transform: translate(2px,2px); }
+  .qb-btn:disabled { cursor: not-allowed; box-shadow: none; }
+  .qb-input, .qb-textarea, .qb-select {
+    width: 100%; box-sizing: border-box;
+    font-family: 'VT323', monospace; font-size: 20px;
+    color: #e8e4d3; background: #14160f;
+    border: 3px solid #57604a; padding: 10px 12px; outline: none;
+  }
+  .qb-textarea { resize: vertical; }
+  .qb-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .qb-avatar { image-rendering: pixelated; border: 2px solid #000; display:block; }
+  .qb-toast {
+    position: relative; font-family: 'Press Start 2P', monospace; font-size: 9px;
+    padding: 10px 14px; margin-bottom: 14px; border: 2px solid #000; line-height: 1.6;
+  }
+  .qb-badge { font-family: 'Press Start 2P', monospace; font-size: 7px; padding: 4px 8px; display: inline-block; }
+</style>
 
+<div id="qb-root" style="background:#1a1d17; min-height:100vh; width:100%; padding:1.5rem; overflow-y:auto;"></div>
+
+<script>
+(function () {
+  const SUPABASE_URL = "https://qzupfyqizurpkvifkmnn.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_gp-WE1KorWX85B8gsPqYrA_-7juvU8q";
+
+  if (!window.supabase || !window.supabase.createClient) {
+    document.getElementById("qb-root").innerHTML =
+      '<div style="padding:2rem; text-align:center; font-family:monospace; color:#e0554a;">' +
+      "Couldn't load the Supabase library (cdn.jsdelivr.net may be blocked here). " +
+      "Try disabling any ad/script blocker for this page, or host supabase-js yourself." +
+      "</div>";
+    return;
+  }
+
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+  const PLAYERS_TABLE = "quest_players_public";
+
+  const PALETTE = {
+    bg: "#1a1d17", panel: "#2b2f24", panel2: "#33382a", stone: "#3f4436",
+    border: "#57604a", emerald: "#39d353", emeraldDark: "#1f8a37",
+    gold: "#f0c93a", netherite: "#4a4550", text: "#e8e4d3",
+    textDim: "#a8a290", danger: "#e0554a", blue: "#4a90d9"
+  };
+  const STATUS_COLOR = { online: PALETTE.emerald, away: PALETTE.gold, offline: PALETTE.textDim };
+  const SKIN_PALETTE = ["#000000", "#ffffff", "#e8e4d3", "#e0554a", "#e0854a", "#f0c93a", "#39d353", "#1f8a37", "#4a90d9", "#0b2a4a", "#8b5cf6", "#c9a06a", "#7c4a2d", "#57604a", "#a8a290", "#00000000"];
+  const CATEGORIES = ["general", "building", "mining", "pvp", "farming", "redstone", "exploration", "base location"];
+  const RANKS = {
+    white: { label: "white — soldier", short: "soldier", color: "#e8e4d3", dark: "#3f4436" },
+    black: { label: "black — commander", short: "commander", color: "#c9c4b0", dark: "#14160f" },
+    law: { label: "law — leader", short: "leader", color: PALETTE.gold, dark: "#4a3b06" },
+    none: { label: "none — unranked", short: "unranked", color: PALETTE.textDim, dark: "#2b2f24" }
+  };
+  const STATES = {
+    member: { label: "law member", color: PALETTE.emerald, dark: "#0b3d16" },
+    ally: { label: "ally to law", color: PALETTE.blue, dark: "#0b2a4a" },
+    neutral: { label: "neutral", color: PALETTE.textDim, dark: "#2b2f24" },
+    enemy: { label: "enemy to law", color: PALETTE.danger, dark: "#4a1010" },
+    left_law: { label: "left law", color: "#e0854a", dark: "#4a2a0b" }
+  };
+  const DIFFICULTY = {
+    easy: { label: "easy", color: PALETTE.emerald, dark: "#0b3d16" },
+    medium: { label: "medium", color: PALETTE.gold, dark: "#4a3b06" },
+    hard: { label: "hard", color: "#e0854a", dark: "#4a2a0b" },
+    legendary: { label: "impossible", color: PALETTE.danger, dark: "#4a1010" }
+  };
+
+  const root = document.getElementById("qb-root");
+
+  let me = null; // quest_players row for current user, once logged in
+  let players = [];
+  let quests = [];
+  let tab = "board";
+  let loading = true;
+  let toast = null; // { text, kind }
+  let posting = false;
+  let filterCategory = "all";
+  let searchTerm = "";
+  let searchResults = [];
+  let searchedPlayer = null;
+  const authForm = { username: "", password: "", rank: "white" };
+  const draft = { title: "", desc: "", reward: "", category: "general", difficulty: "easy" };
+  let heartbeatTimer = null;
+  const profileForm = { bio: "", statusNote: "", oldPassword: "", newPassword: "", avatarUrl: "", avatarSkin: "", nickname: "" };
+  const bioEditForm = { username: "", bio: "" }; // admin: editing another player's bio/description
+  let mustSetPassword = false; // true right after signing into an admin-created (open) account
+  const forcePasswordForm = { newPassword: "", confirmPassword: "" };
+  let skinDrawColor = "#e0554a";
+  let skinErasing = false;
+  let skinCanvasSnapshot = null; // dataURL — persists drawing progress across re-renders
+  let editingQuestId = null; // admin: quest currently being edited inline
+  const editForm = { title: "", desc: "", reward: "", category: "general", difficulty: "easy" };
+  let leaderboard = [];
+  const scoreForm = { username: "", score: "" };
+  const rankForm = { username: "", rank: "white" };
+  const stateForm = { username: "", state: "member" };
+  const createAccountForm = { username: "", rank: "white", state: "member" };
+  let infoPosts = [];
+  const infoForm = { message: "" };
+  let postingInfo = false;
+  let communityPosts = [];
+  let communityLikes = []; // [{post_id, username}]
+  const communityForm = { message: "" };
+  let postingCommunity = false;
+  let replyOpenId = null; // id of post currently showing a reply box
+  const replyForm = { message: "" };
+  let postingReply = false;
+  let editingCommunityId = null; // id of post/reply currently being edited
+  const editCommunityForm = { message: "" };
+  let savingCommunityEdit = false;
+  let likingCommunityId = null; // id currently mid-toggle, to avoid double clicks
+
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : s;
+    return d.innerHTML;
+  }
+  // Shows the player's nickname if they have one, otherwise falls back to their username.
+  // Accepts a player row object, or a plain username string.
+  function displayName(p) {
+    if (!p) return "";
+    if (typeof p === "string") return p;
+    return (p.nickname && p.nickname.trim()) ? p.nickname.trim() : p.username;
+  }
+  function avatarUrl(username, size) {
+    return `https://minotar.net/avatar/${encodeURIComponent(username)}/${size || 40}`;
+  }
+  function playerAvatarImg(player, size, cssSize) {
+    const px = cssSize || size || 40;
+    if (!player || typeof player === "string") {
+      const src = avatarUrl(player || "Steve", size);
+      return `<img class="qb-avatar" src="${esc(src)}" width="${px}" height="${px}" style="object-fit:cover;" alt="" />`;
+    }
+    // avatar_url = direct image link (takes priority)
+    // avatar_skin = custom MC username to pull skin from minotar
+    // default: no avatar set at all -> plain Steve skin (not the player's username)
+    let src;
+    if (player.avatar_url && player.avatar_url.trim()) {
+      src = player.avatar_url.trim();
+    } else if (player.avatar_skin && player.avatar_skin.trim()) {
+      src = avatarUrl(player.avatar_skin.trim(), size);
+    } else {
+      src = avatarUrl("Steve", size);
+    }
+    const fallback = avatarUrl("Steve", size);
+    return `<img class="qb-avatar" src="${esc(src)}" width="${px}" height="${px}" style="object-fit:cover;" alt="" onerror="this.src='${esc(fallback)}'" />`;
+  }
+  function rankBadge(rankKey) {
+    const r = RANKS[rankKey] || RANKS.white;
+    return `<span class="qb-badge" style="background:${r.dark}; color:${r.color}; border:2px solid #000;">${esc(r.short)}</span>`;
+  }
+  function stateBadge(stateKey) {
+    const s = STATES[stateKey] || STATES.member;
+    return `<span class="qb-badge" style="background:${s.dark}; color:${s.color}; border:2px solid #000;">${esc(s.label)}</span>`;
+  }
+  function timeAgo(iso) {
+    const diff = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    return Math.floor(h / 24) + "d ago";
+  }
+  function showToast(text, kind) {
+    toast = { text, kind: kind || "danger" };
+    render();
+  }
+
+  async function loadAll() {
+    const [{ data: qData, error: qErr }, { data: pData, error: pErr }, { data: lData, error: lErr }, { data: iData, error: iErr }, { data: cData, error: cErr }, { data: clData, error: clErr }] = await Promise.all([
+      sb.from("quests").select("*").order("created_at", { ascending: false }),
+      sb.from(PLAYERS_TABLE).select("*").order("last_seen", { ascending: false }),
+      sb.from("quest_leaderboard").select("*").order("score", { ascending: false }),
+      sb.from("quest_info").select("*").order("created_at", { ascending: false }),
+      sb.from("quest_community").select("*").order("created_at", { ascending: true }),
+      sb.from("quest_community_likes").select("post_id, username")
+    ]);
+    if (!qErr) quests = qData || [];
+    if (!pErr) players = pData || [];
+    if (!lErr) leaderboard = lData || [];
+    if (!iErr) infoPosts = iData || [];
+    if (!cErr) communityPosts = cData || [];
+    if (!clErr) communityLikes = clData || [];
+    if (me) {
+      const fresh = players.find(p => p.username === me.username);
+      if (fresh) {
+        me = Object.assign({}, me, fresh); // keep session_token, refresh the rest
+        profileForm.avatarUrl = me.avatar_url || "";
+        profileForm.avatarSkin = me.avatar_skin || "";
+        profileForm.nickname = me.nickname || "";
+      }
+    }
+  }
+
+  async function doSignIn() {
+    const u = authForm.username.trim();
+    const p = authForm.password;
+    if (!u) return showToast("enter your username.");
+    posting = true; render();
+
+    // First check: does this account have no password? (admin-created open account)
+    // We check the public view for password_hash being null
+    const { data: accountCheck } = await sb.from(PLAYERS_TABLE).select("username, password_hash").ilike("username", u).limit(1).single();
+    const isOpenAccount = accountCheck && (accountCheck.password_hash === null || accountCheck.password_hash === "");
+
+    if (isOpenAccount) {
+      // Anyone can sign in — but must set a password before they can use the account.
+      const { data: openRow, error: openErr } = await sb.rpc("qb_open_account_login", { p_username: u }).single();
+      posting = false;
+      if (openErr || !openRow) { showToast("account not found."); render(); return; }
+      // Generate a lightweight client-side session token for this session
+      const fakeToken = "open_" + Math.random().toString(36).slice(2) + Date.now();
+      me = { username: openRow.username, status: "online", status_note: openRow.status_note, bio: openRow.bio, rank: openRow.rank, state: openRow.state, created_at: openRow.created_at, last_seen: openRow.last_seen, session_token: fakeToken, avatar_url: openRow.avatar_url || null, open: true };
+      mustSetPassword = true;
+      toast = null;
+      authForm.username = ""; authForm.password = "";
+      render();
+      return;
+    }
+
+    // Normal password login
+    if (!p) { posting = false; showToast("enter your password."); render(); return; }
+    let data, error;
+    try {
+      ({ data, error } = await sb.rpc("qb_login", { p_username: u, p_password: p }).single());
+    } catch (e) { error = e; }
+    posting = false;
+    if (error || !data) {
+      showToast("wrong username or password.");
+      render(); return;
+    }
+    me = { username: data.username, status: data.status, status_note: data.status_note, bio: data.bio, rank: data.rank, state: data.state, created_at: data.created_at, last_seen: data.last_seen, session_token: data.session_token, avatar_url: data.avatar_url || null };
+    await afterLogin();
+  }
+
+  function isAdmin() {
+    return !!me && me.username.toLowerCase() === "limziyuan1143";
+  }
+
+  async function afterLogin() {
+    loading = true; render();
+    await loadAll();
+    loading = false;
+    startHeartbeat();
+    toast = null;
+    authForm.username = ""; authForm.password = "";
+    profileForm.avatarUrl = me.avatar_url || "";
+    profileForm.avatarSkin = me.avatar_skin || "";
+    saveSession();
+    render();
+  }
+
+  function startHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(async () => {
+      if (!me) return;
+      await sb.rpc("qb_heartbeat", { p_username: me.username, p_session_token: me.session_token });
+    }, 20000);
+  }
+
+  async function setStatus(status) {
+    await sb.rpc("qb_set_status", { p_username: me.username, p_session_token: me.session_token, p_status: status });
+    await loadAll();
+    render();
+  }
+
+  const SESSION_KEY = "qb_session";
+  function saveSession() {
+    try {
+      if (me) localStorage.setItem(SESSION_KEY, JSON.stringify({ username: me.username, session_token: me.session_token }));
+    } catch (e) { /* storage unavailable, ignore */ }
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
+  }
+
+  async function logout() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (me) await sb.rpc("qb_set_status", { p_username: me.username, p_session_token: me.session_token, p_status: "offline" });
+    me = null;
+    clearSession();
+    authForm.username = ""; authForm.password = "";
+    render();
+  }
+
+  async function postQuest() {
+    if (!draft.title.trim() || !draft.reward.trim()) return showToast("quest needs a title and a prize.");
+    posting = true; render();
+    const { error } = await sb.from("quests").insert({
+      title: draft.title.trim(), description: draft.desc.trim(), reward: draft.reward.trim(),
+      poster: me.username, category: draft.category, difficulty: draft.difficulty
+    });
+    posting = false;
+    if (error) { showToast("couldn't post the quest: " + error.message); render(); return; }
+    draft.title = ""; draft.desc = ""; draft.reward = ""; draft.category = "general"; draft.difficulty = "easy";
+    tab = "board";
+    showToast("quest posted!", "gold");
+    await loadAll();
+    render();
+  }
+
+  async function claimQuest(id) {
+    await sb.from("quests").update({ claimed_by: me.username }).eq("id", id).is("claimed_by", null);
+    await loadAll(); render();
+  }
+  async function unclaimQuest(id) {
+    await sb.from("quests").update({ claimed_by: null }).eq("id", id).eq("claimed_by", me.username);
+    await loadAll(); render();
+  }
+  async function completeQuest(id) {
+    const { error } = await sb.rpc("qb_complete_quest", { p_username: me.username, p_session_token: me.session_token, p_quest_id: id });
+    if (error) { showToast("couldn't complete: " + error.message); return; }
+    await loadAll(); render();
+  }
+  async function deleteQuest(id) {
+    if (isAdmin()) {
+      const { error } = await sb.rpc("qb_admin_delete_quest", { p_username: me.username, p_session_token: me.session_token, p_quest_id: id });
+      if (error) { showToast("couldn't delete: " + error.message); return; }
+    } else {
+      await sb.from("quests").delete().eq("id", id).eq("poster", me.username);
+    }
+    await loadAll(); render();
+  }
+
+  function startEditQuest(q) {
+    editingQuestId = q.id;
+    editForm.title = q.title; editForm.desc = q.description || ""; editForm.reward = q.reward;
+    editForm.category = q.category; editForm.difficulty = q.difficulty;
+    render();
+  }
+  function cancelEditQuest() {
+    editingQuestId = null;
+    render();
+  }
+  async function saveEditQuest(id) {
+    if (!editForm.title.trim() || !editForm.reward.trim()) return showToast("quest needs a title and a prize.");
+    const { error } = await sb.rpc("qb_admin_update_quest", {
+      p_username: me.username, p_session_token: me.session_token, p_quest_id: id,
+      p_title: editForm.title.trim(), p_description: editForm.desc.trim(), p_reward: editForm.reward.trim(),
+      p_category: editForm.category, p_difficulty: editForm.difficulty
+    });
+    if (error) { showToast("couldn't save: " + error.message); return; }
+    editingQuestId = null;
+    await loadAll(); render();
+  }
+
+  async function setLeaderboardScore() {
+    const u = scoreForm.username.trim();
+    const s = parseInt(scoreForm.score, 10);
+    if (!u) return showToast("pick a player.");
+    if (isNaN(s)) return showToast("enter a numeric score.");
+    const { error } = await sb.rpc("qb_admin_set_score", { p_username: me.username, p_session_token: me.session_token, p_target_username: u, p_score: s });
+    if (error) { showToast("couldn't set score: " + error.message); return; }
+    scoreForm.username = ""; scoreForm.score = "";
+    showToast("score updated.", "gold");
+    await loadAll(); render();
+  }
+
+  async function setPlayerRank() {
+    const u = rankForm.username.trim();
+    if (!u) return showToast("pick a player.");
+    const { error } = await sb.rpc("qb_admin_set_rank", { p_username: me.username, p_session_token: me.session_token, p_target_username: u, p_rank: rankForm.rank });
+    if (error) { showToast("couldn't set rank: " + error.message); return; }
+    rankForm.username = "";
+    showToast("rank updated.", "gold");
+    await loadAll();
+    if (searchedPlayer && searchedPlayer.username === u) searchedPlayer = players.find(p => p.username === u) || searchedPlayer;
+    render();
+  }
+
+  async function setPlayerState() {
+    const u = stateForm.username.trim();
+    if (!u) return showToast("pick a player.");
+    const { error } = await sb.rpc("qb_admin_set_state", { p_username: me.username, p_session_token: me.session_token, p_target_username: u, p_state: stateForm.state });
+    if (error) { showToast("couldn't set state: " + error.message); return; }
+    stateForm.username = "";
+    showToast("state updated.", "gold");
+    await loadAll();
+    if (searchedPlayer && searchedPlayer.username === u) searchedPlayer = players.find(p => p.username === u) || searchedPlayer;
+    render();
+  }
+
+  async function setPlayerBio(targetUsername, newBio) {
+    if (!isAdmin()) return;
+    const u = (targetUsername || "").trim();
+    if (!u) return;
+    const { error } = await sb.rpc("qb_admin_set_bio", { p_username: me.username, p_session_token: me.session_token, p_target_username: u, p_bio: (newBio || "").trim() || null });
+    if (error) { showToast("couldn't update bio: " + error.message); return; }
+    showToast("bio updated.", "gold");
+    if (me.username === u) me.bio = (newBio || "").trim() || null;
+    await loadAll();
+    if (searchedPlayer && searchedPlayer.username === u) searchedPlayer = players.find(p => p.username === u) || searchedPlayer;
+    render();
+  }
+
+  async function setPlayerAvatar(targetUsername, newSkin) {
+    if (!isAdmin()) return;
+    const u = (targetUsername || "").trim();
+    if (!u) return;
+    const skin = (newSkin || "").trim() || null;
+    const { error } = await sb.rpc("qb_admin_set_avatar", { p_username: me.username, p_session_token: me.session_token, p_target_username: u, p_avatar_skin: skin });
+    if (error) {
+      const m = error.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("qb_admin_set_avatar")
+          ? "admin avatar edit needs a small database update first — see the setup note below the app."
+          : "couldn't update avatar: " + m
+      );
+      return;
+    }
+    showToast("avatar updated.", "gold");
+    if (me.username === u) me.avatar_skin = skin;
+    await loadAll();
+    if (searchedPlayer && searchedPlayer.username === u) searchedPlayer = players.find(p => p.username === u) || searchedPlayer;
+    render();
+  }
+
+  async function setPlayerIdentity(targetUsername, newUsername, newNickname) {
+    const u = (targetUsername || "").trim();
+    if (!u) return showToast("pick a player.");
+    const { data, error } = await sb.rpc("qb_admin_set_identity", {
+      p_username: me.username, p_session_token: me.session_token,
+      p_target_username: u,
+      p_new_username: (newUsername || "").trim(),
+      p_new_nickname: (newNickname || "").trim()
+    }).single();
+    if (error) { showToast("couldn't update username/nickname: " + error.message); return; }
+    showToast("username & nickname updated.", "gold");
+    await loadAll();
+    const updatedUsername = data ? data.username : u;
+    if (searchedPlayer && searchedPlayer.username === u) searchedPlayer = players.find(p => p.username === updatedUsername) || searchedPlayer;
+    if (searchTerm === u) searchTerm = updatedUsername;
+    render();
+  }
+
+  async function postInfo() {
+    if (!isAdmin() || !me) return;
+    const msg = infoForm.message.trim();
+    if (!msg) return showToast("write something first.");
+    if (msg.length > 500) return showToast("info: max 500 characters.");
+    postingInfo = true; render();
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_admin_post_info", {
+        p_username: me.username, p_session_token: me.session_token, p_message: msg
+      }));
+    } catch (e) { error = e; }
+    postingInfo = false;
+    if (error) {
+      const m = error.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("qb_admin_post_info")
+          ? "info board needs a small database update first — see the setup note below the app."
+          : "couldn't post: " + m
+      );
+      render();
+      return;
+    }
+    infoForm.message = "";
+    showToast("posted.", "gold");
+    await loadAll(); render();
+  }
+
+  async function deleteInfo(id) {
+    if (!isAdmin() || !me) return;
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_admin_delete_info", {
+        p_username: me.username, p_session_token: me.session_token, p_info_id: id
+      }));
+    } catch (e) { error = e; }
+    if (error) { showToast("couldn't delete: " + error.message); return; }
+    await loadAll(); render();
+  }
+
+  async function postCommunity() {
+    if (!me) return;
+    const msg = communityForm.message.trim();
+    if (!msg) return showToast("write something first.");
+    if (msg.length > 500) return showToast("post: max 500 characters.");
+    postingCommunity = true; render();
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_post_community", {
+        p_username: me.username, p_session_token: me.session_token, p_message: msg
+      }));
+    } catch (e) { error = e; }
+    postingCommunity = false;
+    if (error) {
+      const m = error.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("qb_post_community")
+          ? "community board needs a small database update first — see the setup note below the app."
+          : "couldn't post: " + m
+      );
+      render();
+      return;
+    }
+    communityForm.message = "";
+    showToast("posted.", "gold");
+    await loadAll(); render();
+  }
+
+  function communityReplies(postId) {
+    return communityPosts.filter(p => p.parent_id === postId);
+  }
+
+  function communityLikeCount(postId) {
+    return communityLikes.filter(l => l.post_id === postId).length;
+  }
+
+  function communityLikedByMe(postId) {
+    return !!me && communityLikes.some(l => l.post_id === postId && l.username === me.username);
+  }
+
+  function toggleReplyBox(id) {
+    replyOpenId = replyOpenId === id ? null : id;
+    replyForm.message = "";
+    render();
+  }
+
+  async function postReply(parentId) {
+    if (!me) return;
+    const msg = replyForm.message.trim();
+    if (!msg) return showToast("write a reply first.");
+    if (msg.length > 500) return showToast("reply: max 500 characters.");
+    postingReply = true; render();
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_post_community", {
+        p_username: me.username, p_session_token: me.session_token, p_message: msg, p_parent_id: parentId
+      }));
+    } catch (e) { error = e; }
+    postingReply = false;
+    if (error) { showToast("couldn't reply: " + (error.message || "")); render(); return; }
+    replyForm.message = "";
+    replyOpenId = null;
+    showToast("replied.", "gold");
+    await loadAll(); render();
+  }
+
+  function startEditCommunity(post) {
+    editingCommunityId = post.id;
+    editCommunityForm.message = post.message;
+    replyOpenId = null;
+    render();
+  }
+
+  function cancelEditCommunity() {
+    editingCommunityId = null;
+    editCommunityForm.message = "";
+    render();
+  }
+
+  async function saveEditCommunity(id) {
+    if (!me) return;
+    const msg = editCommunityForm.message.trim();
+    if (!msg) return showToast("message can't be empty.");
+    if (msg.length > 500) return showToast("max 500 characters.");
+    savingCommunityEdit = true; render();
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_edit_community", {
+        p_username: me.username, p_session_token: me.session_token, p_post_id: id, p_message: msg
+      }));
+    } catch (e) { error = e; }
+    savingCommunityEdit = false;
+    if (error) {
+      const m = error.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("qb_edit_community")
+          ? "community board needs a small database update first — see the setup note below the app."
+          : "couldn't save: " + m
+      );
+      render();
+      return;
+    }
+    editingCommunityId = null;
+    editCommunityForm.message = "";
+    showToast("saved.", "gold");
+    await loadAll(); render();
+  }
+
+  async function toggleLikeCommunity(id) {
+    if (!me || likingCommunityId) return;
+    likingCommunityId = id;
+    // optimistic update
+    const already = communityLikedByMe(id);
+    if (already) {
+      communityLikes = communityLikes.filter(l => !(l.post_id === id && l.username === me.username));
+    } else {
+      communityLikes = communityLikes.concat([{ post_id: id, username: me.username }]);
+    }
+    render();
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_toggle_like_community", {
+        p_username: me.username, p_session_token: me.session_token, p_post_id: id
+      }));
+    } catch (e) { error = e; }
+    likingCommunityId = null;
+    if (error) {
+      const m = error.message || "";
+      // revert optimistic update
+      await loadAll();
+      showToast(
+        m.includes("does not exist") || m.includes("qb_toggle_like_community")
+          ? "community board needs a small database update first — see the setup note below the app."
+          : "couldn't like: " + m
+      );
+      render();
+      return;
+    }
+    render();
+  }
+
+  async function deleteCommunity(id) {
+    if (!me) return;
+    let error;
+    try {
+      ({ error } = await sb.rpc("qb_delete_community", {
+        p_username: me.username, p_session_token: me.session_token, p_post_id: id
+      }));
+    } catch (e) { error = e; }
+    if (error) { showToast("couldn't delete: " + error.message); return; }
+    if (editingCommunityId === id) { editingCommunityId = null; }
+    if (replyOpenId === id) { replyOpenId = null; }
+    await loadAll(); render();
+  }
+
+  async function createAccount() {
+    const u = createAccountForm.username.trim();
+    if (!u || u.length > 20) return showToast("pick a username, max 20 characters.");
+    if (!/^[a-zA-Z0-9_]+$/.test(u)) return showToast("username: letters, numbers, underscore only.");
+    const { data, error } = await sb.rpc("qb_admin_create_account", {
+      p_username: me.username, p_session_token: me.session_token,
+      p_target_username: u, p_rank: createAccountForm.rank, p_state: createAccountForm.state
+    }).single();
+    if (error) { showToast("couldn't create account: " + error.message); return; }
+    createAccountForm.username = "";
+    showToast(`created ${data.username} — no password yet; whoever signs in first will be prompted to set one.`, "gold");
+    await loadAll(); render();
+  }
+
+  function initSkinCanvas() {
+    const canvas = document.getElementById("qb-skin-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    const GRID = 16;
+    const cell = canvas.width / GRID; // 4px per pixel at 256px canvas
+
+    if (skinCanvasSnapshot) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      img.src = skinCanvasSnapshot;
+    }
+
+    let drawing = false;
+    function paintAt(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.floor((clientX - rect.left) / rect.width * GRID);
+      const y = Math.floor((clientY - rect.top) / rect.height * GRID);
+      if (x < 0 || y < 0 || x >= GRID || y >= GRID) return;
+      if (skinErasing) {
+        ctx.clearRect(x * cell, y * cell, cell, cell);
+      } else {
+        ctx.fillStyle = skinDrawColor;
+        ctx.clearRect(x * cell, y * cell, cell, cell);
+        ctx.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+    function pos(e) { return e.touches ? e.touches[0] : e; }
+    function start(e) { drawing = true; const p = pos(e); paintAt(p.clientX, p.clientY); e.preventDefault(); }
+    function move(e) { if (!drawing) return; const p = pos(e); paintAt(p.clientX, p.clientY); e.preventDefault(); }
+    function stop() { drawing = false; }
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+    canvas.addEventListener("touchstart", start, { passive: false });
+    canvas.addEventListener("touchmove", move, { passive: false });
+    canvas.addEventListener("touchend", stop);
+
+    root.querySelectorAll(".qb-skin-color").forEach(b => b.addEventListener("click", () => {
+      skinDrawColor = b.dataset.color;
+      skinErasing = (b.dataset.color === "#00000000");
+    }));
+    const customColor = document.getElementById("qb-skin-color-custom");
+    if (customColor) customColor.addEventListener("input", e => { skinDrawColor = e.target.value; skinErasing = false; });
+
+    const eraserBtn = document.getElementById("qb-skin-eraser-btn");
+    if (eraserBtn) eraserBtn.addEventListener("click", () => { skinErasing = true; render(); });
+
+    const clearBtn = document.getElementById("qb-skin-clear-btn");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      skinCanvasSnapshot = canvas.toDataURL("image/png");
+    });
+
+    const useBtn = document.getElementById("qb-skin-use-btn");
+    if (useBtn) useBtn.addEventListener("click", () => {
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = GRID; exportCanvas.height = GRID;
+      const exportCtx = exportCanvas.getContext("2d");
+      exportCtx.imageSmoothingEnabled = false;
+      exportCtx.drawImage(canvas, 0, 0, GRID, GRID);
+      skinCanvasSnapshot = canvas.toDataURL("image/png");
+      profileForm.avatarUrl = exportCanvas.toDataURL("image/png");
+      profileForm.avatarSkin = "";
+      showToast('custom icon loaded into preview — hit "save profile" to keep it.', "gold");
+    });
+  }
+
+  async function submitForcePassword() {
+    const p1 = forcePasswordForm.newPassword;
+    const p2 = forcePasswordForm.confirmPassword;
+    if (!p1 || p1.length < 6) return showToast("password needs at least 6 characters.");
+    if (p1 !== p2) return showToast("passwords don't match.");
+    posting = true; render();
+
+    // This account currently has no password (p_old_password stays null).
+    let updErr;
+    try {
+      ({ error: updErr } = await sb.rpc("qb_update_profile", {
+        p_username: me.username, p_session_token: me.session_token,
+        p_bio: me.bio || "", p_status_note: me.status_note || "",
+        p_old_password: null, p_new_password: p1
+      }).single());
+    } catch (e) { updErr = e; }
+    if (updErr) {
+      posting = false;
+      showToast("couldn't set password: " + updErr.message);
+      render();
+      return;
+    }
+
+    // Now log in for real with the new password to get a proper session token
+    let data, error;
+    try {
+      ({ data, error } = await sb.rpc("qb_login", { p_username: me.username, p_password: p1 }).single());
+    } catch (e) { error = e; }
+    posting = false;
+    if (error || !data) {
+      showToast("password set — please sign in again with your new password.");
+      me = null; mustSetPassword = false; clearSession();
+      render();
+      return;
+    }
+    me = { username: data.username, status: data.status, status_note: data.status_note, bio: data.bio, rank: data.rank, state: data.state, created_at: data.created_at, last_seen: data.last_seen, session_token: data.session_token, avatar_url: data.avatar_url || null };
+    mustSetPassword = false;
+    forcePasswordForm.newPassword = ""; forcePasswordForm.confirmPassword = "";
+    await afterLogin();
+  }
+
+  async function saveProfile() {
+    if (profileForm.newPassword && profileForm.newPassword.length < 6) return showToast("new password needs at least 6 characters.");
+    if (profileForm.newPassword && !profileForm.oldPassword) return showToast("enter your current password to change it.");
+    const newNickname = profileForm.nickname.trim();
+    if (newNickname && newNickname.length > 24) return showToast("nickname: max 24 characters.");
+    posting = true; render();
+    // Save avatar_url directly (public, self-owned field — no password needed)
+    const newAvatarUrl = profileForm.avatarUrl.trim() || null;
+    const newAvatarSkin = profileForm.avatarSkin.trim() || null;
+    const { error: avatarErr } = await sb.rpc("qb_set_avatar", { p_username: me.username, p_session_token: me.session_token, p_avatar_url: newAvatarUrl, p_avatar_skin: newAvatarSkin });
+    if (avatarErr) {
+      posting = false;
+      const m = avatarErr.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("qb_set_avatar")
+          ? "avatar changes need a small database update first — see the setup note below the app."
+          : "couldn't update avatar: " + m
+      );
+      render();
+      return;
+    }
+    // Nickname goes through a dedicated RPC (self-service nickname changes are locked down
+    // at the database level, same as bio/status_note — the RPC verifies the session token
+    // server-side before writing).
+    if (newNickname !== (me.nickname || "")) {
+      let nickErr;
+      try {
+        ({ error: nickErr } = await sb.rpc("qb_set_nickname", {
+          p_username: me.username, p_session_token: me.session_token, p_nickname: newNickname
+        }).single());
+      } catch (e) { nickErr = e; }
+      if (nickErr) {
+        posting = false;
+        const msg = nickErr.message || "";
+        showToast(
+          msg.includes("does not exist") || msg.includes("qb_set_nickname")
+            ? "nickname changes need a small database update first — see the setup note below the app."
+            : "couldn't update nickname: " + msg
+        );
+        render();
+        return;
+      }
+    }
+    let data, error;
+    try {
+      ({ data, error } = await sb.rpc("qb_update_profile", {
+        p_username: me.username, p_session_token: me.session_token,
+        p_bio: profileForm.bio, p_status_note: profileForm.statusNote,
+        p_old_password: profileForm.oldPassword || null, p_new_password: profileForm.newPassword || null
+      }).single());
+    } catch (e) { error = e; }
+    posting = false;
+    if (error) {
+      showToast((error && error.message) || "couldn't update profile.");
+      render();
+      return;
+    }
+    me = Object.assign({}, me, { bio: data.bio, status_note: data.status_note, avatar_url: newAvatarUrl, avatar_skin: newAvatarSkin, nickname: newNickname || null });
+    profileForm.oldPassword = ""; profileForm.newPassword = "";
+    showToast("profile updated.", "gold");
+    await loadAll(); render();
+  }
+
+  async function searchPlayer() {
+    const term = searchTerm.trim();
+    if (!term) { searchResults = []; searchedPlayer = null; render(); return; }
+    const { data } = await sb.from(PLAYERS_TABLE).select("*").ilike("username", `%${term}%`).limit(8);
+    searchResults = data || [];
+    searchedPlayer = searchResults.length === 1 ? searchResults[0] : null;
+    render();
+  }
+
+  function btn(label, { color = PALETTE.emerald, textColor = "#1a1d17", disabled = false, fontSize = 11, padding = "10px 14px" } = {}) {
+    return `background:${disabled ? PALETTE.stone : color}; color:${disabled ? PALETTE.textDim : textColor}; border-color:${disabled ? PALETTE.border : "#000"}; font-size:${fontSize}px; padding:${padding};`;
+  }
+
+  function toastHtml() {
+    if (!toast) return "";
+    const c = toast.kind === "gold" ? PALETTE.gold : PALETTE.danger;
+    return `<div class="qb-toast" style="background:${PALETTE.panel2}; border-color:${c}; color:${c};">${esc(toast.text)}</div>`;
+  }
+
+  function renderForcePassword() {
+    root.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:center; min-height:100vh; padding:1.5rem;">
+        <div style="max-width:420px; width:100%; background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:24px;">
+          <div class="qb-pixel" style="font-size:13px; color:${PALETTE.gold}; margin-bottom:10px;">set a password</div>
+          <div style="font-size:15px; color:${PALETTE.textDim}; margin-bottom:16px; line-height:1.5;">
+            <span style="color:${PALETTE.text};">${esc(me.username)}</span> was created by an admin with no password.
+            pick one now to finish signing in — this locks the account to you going forward.
+          </div>
+          ${toastHtml()}
+          <input id="qb-force-pass-1" type="password" class="qb-input" placeholder="new password (6+ characters)" value="${esc(forcePasswordForm.newPassword)}" style="margin-bottom:10px;" />
+          <input id="qb-force-pass-2" type="password" class="qb-input" placeholder="confirm password" value="${esc(forcePasswordForm.confirmPassword)}" style="margin-bottom:16px;" />
+          <button id="qb-force-pass-submit" class="qb-btn" ${posting ? "disabled" : ""} style="${btn(posting ? "saving..." : "set password & continue", { color: PALETTE.emerald, disabled: posting })}">${posting ? "saving..." : "set password & continue"}</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("qb-force-pass-1").addEventListener("input", e => { forcePasswordForm.newPassword = e.target.value; });
+    document.getElementById("qb-force-pass-2").addEventListener("input", e => { forcePasswordForm.confirmPassword = e.target.value; });
+    document.getElementById("qb-force-pass-2").addEventListener("keydown", e => { if (e.key === "Enter") submitForcePassword(); });
+    document.getElementById("qb-force-pass-submit").addEventListener("click", submitForcePassword);
+  }
+
+  function renderAuth() {
+    root.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2.5rem 1.5rem; min-height:calc(100vh - 3rem);">
+        <div class="qb-pixel" style="font-size:22px; color:${PALETTE.emerald}; margin-bottom:8px; text-align:center;">LAW</div>
+        <div class="qb-pixel" style="font-size:10px; color:${PALETTE.gold}; margin-bottom:28px; text-align:center;">post bounties. claim loot.</div>
+
+        <div style="width:300px;">
+          ${toastHtml()}
+
+          <div class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim}; margin-bottom:8px;">minecraft username</div>
+          <input id="qb-user-input" class="qb-input" placeholder="Steve123" maxlength="20" value="${esc(authForm.username)}" />
+
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin:14px 0 8px;">
+            <span class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim};">password</span>
+            <span style="font-size:13px; color:${PALETTE.textDim};">not needed for open accounts</span>
+          </div>
+          <input id="qb-pass-input" type="password" class="qb-input" placeholder="leave blank if open account" value="${esc(authForm.password)}" />
+
+          <div style="margin-top:18px;">
+            <button id="qb-auth-btn" class="qb-btn" ${posting ? "disabled" : ""} style="width:100%; ${btn("go", { disabled: posting })}">
+              ${posting ? "please wait..." : "sign in"}
+            </button>
+          </div>
+        </div>
+
+        <div class="qb-pixel" style="font-size:8px; color:${PALETTE.textDim}; margin-top:26px; text-align:center; line-height:1.8;">
+          real accounts, secured with a password.<br/>synced to the cloud via supabase.
+        </div>
+      </div>
+    `;
+    const ui = document.getElementById("qb-user-input");
+    const pi = document.getElementById("qb-pass-input");
+    ui.addEventListener("input", e => { authForm.username = e.target.value; });
+    pi.addEventListener("input", e => { authForm.password = e.target.value; });
+    const go = () => doSignIn();
+    pi.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    document.getElementById("qb-auth-btn").addEventListener("click", go);
+  }
+
+  function diffBadge(diff) {
+    const d = DIFFICULTY[diff] || DIFFICULTY.easy;
+    return `<span class="qb-badge" style="background:${d.dark}; color:${d.color}; border:1px solid ${d.color};">${esc(d.label)}</span>`;
+  }
+  function catBadge(cat) {
+    return `<span class="qb-badge" style="background:${PALETTE.stone}; color:${PALETTE.textDim}; border:1px solid ${PALETTE.border};">${esc(cat)}</span>`;
+  }
+
+  function questCard(q) {
+    const isMine = me && q.poster === me.username;
+    const claimedByMe = me && q.claimed_by === me.username;
+    const admin = isAdmin();
+
+    if (editingQuestId === q.id) {
+      return `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:18px;">
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:12px;">editing (admin)</div>
+          <input id="qb-edit-title-${q.id}" class="qb-input" maxlength="60" value="${esc(editForm.title)}" style="margin-bottom:10px;" />
+          <textarea id="qb-edit-desc-${q.id}" class="qb-textarea" rows="2" maxlength="300" style="margin-bottom:10px;">${esc(editForm.desc)}</textarea>
+          <input id="qb-edit-reward-${q.id}" class="qb-input" maxlength="80" value="${esc(editForm.reward)}" style="margin-bottom:10px;" />
+          <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+            <select id="qb-edit-category-${q.id}" class="qb-select" style="flex:1; min-width:120px;">
+              ${CATEGORIES.map(c => `<option value="${c}" ${editForm.category === c ? "selected" : ""}>${c}</option>`).join("")}
+            </select>
+            <select id="qb-edit-difficulty-${q.id}" class="qb-select" style="flex:1; min-width:120px;">
+              ${Object.keys(DIFFICULTY).map(d => `<option value="${d}" ${editForm.difficulty === d ? "selected" : ""}>${DIFFICULTY[d].label}</option>`).join("")}
+            </select>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="qb-btn qb-save-edit" data-id="${q.id}" style="${btn("save", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">save</button>
+            <button class="qb-btn qb-cancel-edit" style="${btn("cancel", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 9, padding: "8px 12px" })}">cancel</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="background:${q.completed ? PALETTE.panel2 : PALETTE.panel}; border:3px solid ${q.completed ? PALETTE.emeraldDark : PALETTE.border}; padding:18px; opacity:${q.completed ? 0.6 : 1};">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:200px;">
+            <div style="display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
+              ${diffBadge(q.difficulty)}${catBadge(q.category)}
+            </div>
+            <div class="qb-pixel" style="font-size:12px; color:${PALETTE.text}; margin-bottom:8px; line-height:1.5;">${esc(q.title)}</div>
+            ${q.description ? `<div style="font-size:18px; color:${PALETTE.textDim}; margin-bottom:10px; line-height:1.4;">${esc(q.description)}</div>` : ""}
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              ${playerAvatarImg(players.find(pl => pl.username === q.poster) || q.poster, 20, 16)}
+              <div class="qb-pixel" style="font-size:8px; color:${PALETTE.textDim};">
+                ${esc(displayName(players.find(pl => pl.username === q.poster) || q.poster))}${q.claimed_by ? ` · claimed by ${esc(displayName(players.find(pl => pl.username === q.claimed_by) || q.claimed_by))}` : ""}${q.completed ? " · COMPLETE" : ""}
+              </div>
+              ${(() => { const pp = players.find(pl => pl.username === q.poster); return pp ? rankBadge(pp.rank) + stateBadge(pp.state) : ""; })()}
+            </div>
+          </div>
+          <div style="background:${PALETTE.netherite}; border:2px solid #000; padding:8px 12px; min-width:120px; text-align:center;">
+            <div class="qb-pixel" style="font-size:7px; color:${PALETTE.gold}; margin-bottom:4px;">prize</div>
+            <div class="qb-pixel" style="font-size:10px; color:${PALETTE.text}; line-height:1.5;">${esc(q.reward)}</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
+          ${!q.completed && !q.claimed_by && !isMine ? `<button class="qb-btn qb-claim" data-id="${q.id}" style="${btn("claim", { fontSize: 9, padding: "8px 12px" })}">claim quest</button>` : ""}
+          ${!q.completed && claimedByMe ? `<button class="qb-btn qb-unclaim" data-id="${q.id}" style="${btn("drop", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 9, padding: "8px 12px" })}">drop claim</button>` : ""}
+          ${!q.completed && isMine && q.claimed_by ? `<button class="qb-btn qb-complete" data-id="${q.id}" style="${btn("complete", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">mark complete & pay out</button>` : ""}
+          ${admin && !isMine ? `<button class="qb-btn qb-admin-edit" data-id="${q.id}" style="${btn("edit (admin)", { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })}">edit (admin)</button>` : ""}
+          ${isMine || admin ? `<button class="qb-btn qb-delete" data-id="${q.id}" style="${btn(admin && !isMine ? "delete (admin)" : "delete", { color: PALETTE.danger, fontSize: 9, padding: "8px 12px" })}">${admin && !isMine ? "delete (admin)" : "delete"}</button>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function playerRow(p) {
+    const score = (leaderboard.find(l => l.username === p.username) || {}).score || 0;
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:${PALETTE.panel}; border:2px solid ${PALETTE.border}; cursor:pointer;" class="qb-player-row" data-username="${esc(p.username)}">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          ${playerAvatarImg(p, 24, 20)}
+          <span class="qb-dot" style="background:${STATUS_COLOR[p.status] || PALETTE.textDim};"></span>
+          <span class="qb-pixel" style="font-size:10px; color:${PALETTE.text};">${esc(displayName(p))}</span>
+          ${rankBadge(p.rank)}${stateBadge(p.state)}
+        </div>
+        <div style="font-size:16px; color:${PALETTE.textDim};">${score} pts · ${esc(p.status)} · seen ${timeAgo(p.last_seen)}</div>
+      </div>
+    `;
+  }
+
+  function playerProfile(p) {
+    const posted = quests.filter(q => q.poster === p.username);
+    const completed = posted.filter(q => q.completed).length;
+    const score = (leaderboard.find(l => l.username === p.username) || {}).score || 0;
+    return `
+      <div style="margin-top:20px; padding:16px; background:${PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+          ${playerAvatarImg(p, 64, 56)}
+          <div>
+            <div class="qb-pixel" style="font-size:13px; color:${PALETTE.text}; margin-bottom:6px;">${esc(p.username)} ${rankBadge(p.rank)} ${stateBadge(p.state)}</div>
+            ${p.nickname && p.nickname.trim() ? `<div style="font-size:14px; color:${PALETTE.textDim}; margin-bottom:6px;">aka "${esc(p.nickname.trim())}"</div>` : ""}
+            <div><span class="qb-dot" style="background:${STATUS_COLOR[p.status]};"></span><span style="font-size:16px; color:${PALETTE.textDim};">${esc(p.status)} · seen ${timeAgo(p.last_seen)}</span></div>
+          </div>
+        </div>
+        <div style="display:flex; gap:20px; margin-bottom:14px; flex-wrap:wrap;">
+          <div><span class="qb-pixel" style="font-size:14px; color:${PALETTE.gold};">${score}</span><div style="font-size:14px; color:${PALETTE.textDim};">score</div></div>
+          <div><span class="qb-pixel" style="font-size:14px; color:${PALETTE.gold};">${posted.length}</span><div style="font-size:14px; color:${PALETTE.textDim};">posted</div></div>
+          <div><span class="qb-pixel" style="font-size:14px; color:${PALETTE.emerald};">${completed}</span><div style="font-size:14px; color:${PALETTE.textDim};">completed</div></div>
+          <div><span class="qb-pixel" style="font-size:14px; color:${PALETTE.text};">${new Date(p.created_at).toLocaleDateString()}</span><div style="font-size:14px; color:${PALETTE.textDim};">joined</div></div>
+        </div>
+        ${isAdmin() ? `
+          <div style="margin-bottom:14px; padding:10px; background:${PALETTE.panel}; border:2px solid ${PALETTE.blue};">
+            <div class="qb-pixel" style="font-size:8px; color:${PALETTE.blue}; margin-bottom:8px;">set username & nickname (admin)</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+              <input id="qb-quick-username-input" class="qb-input" placeholder="username" style="flex:1; min-width:140px;" value="${esc(p.username)}" />
+              <input id="qb-quick-nickname-input" class="qb-input" placeholder="nickname (optional)" style="flex:1; min-width:140px;" value="${esc(p.nickname || "")}" />
+            </div>
+            <button id="qb-quick-identity-save" class="qb-btn" data-username="${esc(p.username)}" style="${btn("set", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set</button>
+            <div class="qb-pixel" style="font-size:8px; color:${PALETTE.blue}; margin:14px 0 8px;">set bio / description (admin)</div>
+            <textarea id="qb-quick-bio-input" class="qb-textarea" rows="3" maxlength="300" placeholder="tell people about this player" style="margin-bottom:8px;">${esc(p.bio || "")}</textarea>
+            <button id="qb-quick-bio-save" class="qb-btn" data-username="${esc(p.username)}" style="${btn("set", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set</button>
+            <div class="qb-pixel" style="font-size:8px; color:${PALETTE.blue}; margin:14px 0 8px;">set avatar skin (admin)</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+              <input id="qb-quick-avatar-input" class="qb-input" placeholder="minecraft username for skin" style="flex:1; min-width:140px;" value="${esc(p.avatar_skin || "")}" />
+              <button id="qb-quick-avatar-save" class="qb-btn" data-username="${esc(p.username)}" style="${btn("set", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set</button>
+            </div>
+            <div class="qb-pixel" style="font-size:8px; color:${PALETTE.blue}; margin:14px 0 8px;">set rank (admin)</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <select id="qb-quick-rank-select" class="qb-select" style="width:auto; flex:1; min-width:140px;">
+                ${Object.keys(RANKS).map(r => `<option value="${r}" ${p.rank === r ? "selected" : ""}>${RANKS[r].label}</option>`).join("")}
+              </select>
+              <button id="qb-quick-rank-save" class="qb-btn" data-username="${esc(p.username)}" style="${btn("set", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set</button>
+            </div>
+            <div class="qb-pixel" style="font-size:8px; color:${PALETTE.blue}; margin:14px 0 8px;">set state (admin)</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <select id="qb-quick-state-select" class="qb-select" style="width:auto; flex:1; min-width:140px;">
+                ${Object.keys(STATES).map(s => `<option value="${s}" ${p.state === s ? "selected" : ""}>${STATES[s].label}</option>`).join("")}
+              </select>
+              <button id="qb-quick-state-save" class="qb-btn" data-username="${esc(p.username)}" style="${btn("set", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set</button>
+            </div>
+          </div>
+        ` : ""}
+        <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:8px;">quests posted</div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${posted.map(questCard).join("") || `<div style="font-size:16px; color:${PALETTE.textDim};">none yet.</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMain() {
+    const myStatus = me ? me.status : "online";
+    const visibleQuests = filterCategory === "all" ? quests : quests.filter(q => q.category === filterCategory);
+    // While editing the profile, reflect the in-progress skin/avatar pick in the header icon too,
+    // same as the live "preview" box on the profile tab — not just after saving.
+    const headerPlayer = tab === "profile"
+      ? Object.assign({}, me, { avatar_url: profileForm.avatarUrl, avatar_skin: profileForm.avatarSkin })
+      : me;
+
+    root.innerHTML = `
+      <div style="max-width:1000px; margin:0 auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px; border-bottom:3px solid ${PALETTE.border}; padding-bottom:16px;">
+        <div class="qb-pixel" style="font-size:18px; color:${PALETTE.emerald};">LAW</div>
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span class="qb-dot" style="background:${STATUS_COLOR[myStatus]};"></span>
+          <select id="qb-status-select" class="qb-select" style="width:auto; font-size:14px; padding:6px 8px;">
+            <option value="online" ${myStatus === "online" ? "selected" : ""}>online</option>
+            <option value="away" ${myStatus === "away" ? "selected" : ""}>away</option>
+            <option value="offline" ${myStatus === "offline" ? "selected" : ""}>offline</option>
+          </select>
+          ${playerAvatarImg(headerPlayer, 28, 22)}
+          <div class="qb-pixel" style="font-size:10px; color:${PALETTE.gold};">${esc(displayName(me))}</div>
+          ${rankBadge(me.rank)}${stateBadge(me.state)}
+          <button id="qb-switch-btn" class="qb-btn" style="${btn("sign out", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 9, padding: "6px 10px" })}">sign out</button>
+        </div>
+      </div>
+
+      ${toastHtml()}
+
+      <div style="display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap;">
+        <button id="qb-tab-board" class="qb-btn" style="${btn("board", { color: tab === "board" ? PALETTE.emerald : PALETTE.stone, textColor: tab === "board" ? "#1a1d17" : PALETTE.text })}">board</button>
+        <button id="qb-tab-post" class="qb-btn" style="${btn("post", { color: tab === "post" ? PALETTE.gold : PALETTE.stone, textColor: tab === "post" ? "#1a1d17" : PALETTE.text })}">+ new quest</button>
+        <button id="qb-tab-players" class="qb-btn" style="${btn("players", { color: tab === "players" ? PALETTE.netherite : PALETTE.stone, textColor: PALETTE.text })}">players</button>
+        <button id="qb-tab-search" class="qb-btn" style="${btn("search", { color: tab === "search" ? PALETTE.netherite : PALETTE.stone, textColor: PALETTE.text })}">search player</button>
+        <button id="qb-tab-info" class="qb-btn" style="${btn("info", { color: tab === "info" ? PALETTE.blue : PALETTE.stone, textColor: PALETTE.text })}">info${infoPosts.length ? ` (${infoPosts.length})` : ""}</button>
+        <button id="qb-tab-community" class="qb-btn" style="${btn("community", { color: tab === "community" ? PALETTE.emerald : PALETTE.stone, textColor: PALETTE.text })}">community${communityPosts.length ? ` (${communityPosts.length})` : ""}</button>
+        <button id="qb-tab-leaderboard" class="qb-btn" style="${btn("leaderboard", { color: tab === "leaderboard" ? PALETTE.gold : PALETTE.stone, textColor: tab === "leaderboard" ? "#1a1d17" : PALETTE.text })}">leaderboard</button>
+        <button id="qb-tab-profile" class="qb-btn" style="${btn("profile", { color: tab === "profile" ? PALETTE.emerald : PALETTE.stone, textColor: tab === "profile" ? "#1a1d17" : PALETTE.text })}">my profile</button>
+      </div>
+
+      ${tab === "post" ? `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px; margin-bottom:20px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.text}; margin-bottom:14px;">new bounty</div>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">title</div>
+          <input id="qb-title" class="qb-input" placeholder="Slay the Ender Dragon" maxlength="60" value="${esc(draft.title)}" />
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin:14px 0 6px;">description</div>
+          <textarea id="qb-desc" class="qb-textarea" rows="3" maxlength="300" placeholder="Need help clearing the End on server SMP-2, bring your own gear.">${esc(draft.desc)}</textarea>
+
+          <div style="display:flex; gap:14px; margin-top:14px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:140px;">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">category</div>
+              <select id="qb-category" class="qb-select">
+                ${CATEGORIES.map(c => `<option value="${c}" ${draft.category === c ? "selected" : ""}>${c}</option>`).join("")}
+              </select>
+            </div>
+            <div style="flex:1; min-width:140px;">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">difficulty</div>
+              <select id="qb-difficulty" class="qb-select">
+                ${Object.keys(DIFFICULTY).map(d => `<option value="${d}" ${draft.difficulty === d ? "selected" : ""}>${DIFFICULTY[d].label}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin:14px 0 6px;">prize</div>
+          <input id="qb-reward" class="qb-input" placeholder="64 Netherite Blocks" maxlength="80" value="${esc(draft.reward)}" />
+
+          <div style="margin-top:18px;">
+            <button id="qb-post-btn" class="qb-btn" ${posting ? "disabled" : ""} style="${btn(posting ? "posting..." : "post quest", { disabled: posting })}">${posting ? "posting..." : "post quest"}</button>
+          </div>
+        </div>
+      ` : ""}
+
+      ${tab === "board" ? `
+        <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+          <button class="qb-btn qb-filter" data-cat="all" style="${btn("all", { color: filterCategory === "all" ? PALETTE.blue : PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">all</button>
+          ${CATEGORIES.map(c => `<button class="qb-btn qb-filter" data-cat="${c}" style="${btn(c, { color: filterCategory === c ? PALETTE.blue : PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">${c}</button>`).join("")}
+        </div>
+        ${loading ? `<div class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim}; text-align:center; padding:3rem 0;">loading quests...</div>` : ""}
+        ${!loading && visibleQuests.length === 0 ? `
+          <div style="text-align:center; padding:3rem 0;">
+            <div class="qb-pixel" style="font-size:11px; color:${PALETTE.textDim}; margin-bottom:10px;">board's empty here.</div>
+            <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim};">try another category or post one.</div>
+          </div>
+        ` : ""}
+        ${!loading && visibleQuests.length > 0 ? `<div style="display:flex; flex-direction:column; gap:14px;">${visibleQuests.map(questCard).join("")}</div>` : ""}
+      ` : ""}
+
+      ${tab === "info" ? `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.blue}; margin-bottom:14px;">law info board</div>
+          ${isAdmin() ? `
+            <div style="margin-bottom:20px; padding-bottom:16px; border-bottom:2px solid ${PALETTE.border};">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:8px;">post an announcement</div>
+              <textarea id="qb-info-input" class="qb-textarea" rows="3" maxlength="500" placeholder="announcement for everyone...">${esc(infoForm.message)}</textarea>
+              <div style="margin-top:10px;">
+                <button id="qb-info-post-btn" class="qb-btn" ${postingInfo ? "disabled" : ""} style="${btn(postingInfo ? "posting..." : "post", { color: PALETTE.blue, disabled: postingInfo })}">${postingInfo ? "posting..." : "post"}</button>
+              </div>
+            </div>
+          ` : ""}
+          ${infoPosts.length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">no announcements yet.</div>` : `
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              ${infoPosts.map(post => `
+                <div style="padding:14px; background:${PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      ${playerAvatarImg(players.find(pl => pl.username === post.username) || post.username, 22, 18)}
+                      <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(players.find(pl => pl.username === post.username) || post.username))}</span>
+                      <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}</span>
+                    </div>
+                    ${isAdmin() ? `<button class="qb-btn qb-info-delete" data-id="${post.id}" style="${btn("delete", { color: PALETTE.danger, fontSize: 8, padding: "6px 10px" })}">delete</button>` : ""}
+                  </div>
+                  <div style="font-size:18px; color:${PALETTE.text}; line-height:1.4; white-space:pre-wrap;">${esc(post.message)}</div>
+                </div>
+              `).join("")}
+            </div>
+          `}
+        </div>
+      ` : ""}
+
+      ${tab === "community" ? `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.emerald}; margin-bottom:14px;">community</div>
+          ${me ? `
+            <div style="margin-bottom:20px; padding-bottom:16px; border-bottom:2px solid ${PALETTE.border};">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:8px;">share whatever you like</div>
+              <textarea id="qb-community-input" class="qb-textarea" rows="3" maxlength="500" placeholder="say something to the community...">${esc(communityForm.message)}</textarea>
+              <div style="margin-top:10px;">
+                <button id="qb-community-post-btn" class="qb-btn" ${postingCommunity ? "disabled" : ""} style="${btn(postingCommunity ? "posting..." : "post", { color: PALETTE.emerald, disabled: postingCommunity })}">${postingCommunity ? "posting..." : "post"}</button>
+              </div>
+            </div>
+          ` : `<div style="font-size:16px; color:${PALETTE.textDim}; margin-bottom:20px;">log in to post.</div>`}
+          ${communityPosts.filter(p => !p.parent_id).length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">nothing posted yet — be the first.</div>` : `
+            <div style="display:flex; flex-direction:column; gap:12px;">
+              ${communityPosts.filter(p => !p.parent_id).slice().reverse().map(post => communityPostCard(post, false)).join("")}
+            </div>
+          `}
+        </div>
+      ` : ""}
+
+      ${tab === "players" ? `
+        <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:12px;">${players.length} account${players.length === 1 ? "" : "s"} on this board</div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${players.map(playerRow).join("") || `<div class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim};">no players yet.</div>`}
+        </div>
+      ` : ""}
+
+      ${tab === "search" ? `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.text}; margin-bottom:14px;">find a player</div>
+          <div style="display:flex; gap:10px;">
+            <input id="qb-search-input" class="qb-input" placeholder="type a username" value="${esc(searchTerm)}" />
+            <button id="qb-search-btn" class="qb-btn" style="${btn("search", { fontSize: 10, padding: "10px 14px" })}">go</button>
+          </div>
+
+          ${searchResults.length === 0 && searchTerm.trim() ? `<div class="qb-pixel" style="font-size:10px; color:${PALETTE.danger}; margin-top:16px;">no player found by that name.</div>` : ""}
+
+          ${searchResults.length > 1 && !searchedPlayer ? `
+            <div style="margin-top:16px; display:flex; flex-direction:column; gap:8px;">
+              ${searchResults.map(playerRow).join("")}
+            </div>
+          ` : ""}
+
+          ${searchedPlayer ? playerProfile(searchedPlayer) : ""}
+        </div>
+      ` : ""}
+
+      ${tab === "leaderboard" ? `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.gold}; margin-bottom:14px;">law leaderboard</div>
+          ${leaderboard.length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">no scores yet.</div>` : `
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              ${leaderboard.map((row, i) => { const pp = players.find(pl => pl.username === row.username); return `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:${PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+                  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <span class="qb-pixel" style="font-size:11px; color:${PALETTE.gold}; min-width:24px;">#${i + 1}</span>
+                    ${playerAvatarImg(pp || row.username, 24, 20)}
+                    <span class="qb-pixel" style="font-size:10px; color:${PALETTE.text};">${esc(displayName(pp || row.username))}</span>
+                    ${pp ? rankBadge(pp.rank) + stateBadge(pp.state) : ""}
+                  </div>
+                  <span class="qb-pixel" style="font-size:11px; color:${PALETTE.emerald};">${row.score}</span>
+                </div>
+              `; }).join("")}
+            </div>
+          `}
+
+          ${isAdmin() ? `
+            <div style="margin-top:20px; padding-top:16px; border-top:2px solid ${PALETTE.border};">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.blue}; margin-bottom:10px;">set a score (admin)</div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <input id="qb-score-username" class="qb-input" placeholder="username" style="flex:1; min-width:140px;" value="${esc(scoreForm.username)}" />
+                <input id="qb-score-value" class="qb-input" placeholder="score" type="number" style="width:110px;" value="${esc(scoreForm.score)}" />
+                <button id="qb-score-save" class="qb-btn" style="${btn("set score", { color: PALETTE.blue, fontSize: 9, padding: "10px 14px" })}">set score</button>
+              </div>
+            </div>
+
+            <div style="margin-top:20px; padding-top:16px; border-top:2px solid ${PALETTE.border};">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.blue}; margin-bottom:6px;">create account with no password (admin)</div>
+              <div style="font-size:14px; color:${PALETTE.textDim}; margin-bottom:10px;">anyone can sign in with just the username — they'll be asked to set a password on first sign-in, which then locks the account to them.</div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+                <input id="qb-create-username" class="qb-input" placeholder="username" style="flex:1; min-width:140px;" value="${esc(createAccountForm.username)}" />
+              </div>
+              <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <select id="qb-create-rank" class="qb-select" style="width:auto; flex:1; min-width:140px;">
+                  ${Object.keys(RANKS).map(r => `<option value="${r}" ${createAccountForm.rank === r ? "selected" : ""}>${RANKS[r].label}</option>`).join("")}
+                </select>
+                <select id="qb-create-state" class="qb-select" style="width:auto; flex:1; min-width:140px;">
+                  ${Object.keys(STATES).map(s => `<option value="${s}" ${createAccountForm.state === s ? "selected" : ""}>${STATES[s].label}</option>`).join("")}
+                </select>
+                <button id="qb-create-save" class="qb-btn" style="${btn("create", { color: PALETTE.gold, fontSize: 9, padding: "10px 14px" })}">create</button>
+              </div>
+            </div>
+          ` : ""}
+        </div>
+      ` : ""}
+
+      ${tab === "profile" ? (() => {
+          const previewPlayer = Object.assign({}, me, { avatar_url: profileForm.avatarUrl, avatar_skin: profileForm.avatarSkin });
+          const currentSkin = profileForm.avatarSkin || me.username;
+          // Build a deduplicated list: all players + a few famous skins.
+          const FAMOUS = [
+            "Steve", "Alex", "Notch", "Herobrine", "Dream", "Technoblade", "Philza",
+            "parrotx2",
+            "flamefrags"
+          ];
+          const EXCLUDED_SKINS = ["titus", "asherc"];
+          const playerNames = players.map(p => p.username).filter(n => !EXCLUDED_SKINS.includes(n.toLowerCase()));
+          const skinOptions = [...new Map([
+            ...playerNames.map(n => [n, { name: n, label: n, isPlayer: true }]),
+            ...FAMOUS
+              .map(f => (typeof f === "string" ? { name: f, label: f } : { name: f.id, label: f.label }))
+              .filter(f => !playerNames.includes(f.label))
+              .map(f => [f.label, { name: f.name, label: f.label, isPlayer: false }])
+          ]).values()];
+          return `
+        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; padding:20px; max-width:500px;">
+          <div class="qb-pixel" style="font-size:11px; color:${PALETTE.text}; margin-bottom:14px;">edit profile</div>
+
+          <div style="display:flex; align-items:center; gap:16px; margin-bottom:20px; padding:14px; background:${PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+            ${playerAvatarImg(previewPlayer, 64, 56)}
+            <div>
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:4px;">preview</div>
+              <div class="qb-pixel" style="font-size:10px; color:${PALETTE.text};">${esc(displayName(me))}</div>
+              <div style="margin-top:4px; font-size:13px; color:${PALETTE.textDim};">skin: ${esc(currentSkin)}</div>
+              <div style="margin-top:6px;">${rankBadge(me.rank)}${stateBadge(me.state)}</div>
+            </div>
+          </div>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:10px;">choose a skin</div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px;">
+            ${skinOptions.map(opt => {
+              const isSelected = currentSkin === opt.name;
+              const src = avatarUrl(opt.name, 40);
+              return `<button class="qb-skin-pick" data-skin="${esc(opt.name)}" title="${esc(opt.label)}" style="
+                background:${isSelected ? PALETTE.emeraldDark : PALETTE.panel2};
+                border:3px solid ${isSelected ? PALETTE.emerald : PALETTE.border};
+                padding:4px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; width:56px;
+              ">
+                <img src="${src}" width="32" height="32" style="image-rendering:pixelated;" alt="${esc(opt.label)}" />
+                <span style="font-family:'VT323',monospace; font-size:11px; color:${isSelected ? PALETTE.emerald : PALETTE.textDim}; word-break:break-all; line-height:1.1;">${esc(opt.label.length > 7 ? opt.label.slice(0,6)+'…' : opt.label)}</span>
+              </button>`;
+            }).join("")}
+          </div>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:10px;">or draw a custom icon (16×16px)</div>
+          <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; margin-bottom:18px;">
+            <canvas id="qb-skin-canvas" width="256" height="256" style="border:3px solid ${PALETTE.border}; image-rendering:pixelated; cursor:crosshair; touch-action:none; background:
+              repeating-conic-gradient(#3f4436 0% 25%, #33382a 0% 50%) 0 0 / 32px 32px;"></canvas>
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:140px;">
+              <div style="display:flex; flex-wrap:wrap; gap:4px; max-width:140px;">
+                ${SKIN_PALETTE.map(c => `<button class="qb-skin-color" data-color="${c}" title="${c}" style="width:20px; height:20px; border:2px solid #000; cursor:pointer; background:${c === "#00000000" ? "repeating-conic-gradient(#888 0% 25%, #bbb 0% 50%) 0 0 / 10px 10px" : c};"></button>`).join("")}
+              </div>
+              <input id="qb-skin-color-custom" type="color" value="#e0554a" style="width:60px; height:28px; border:2px solid #000; padding:0; cursor:pointer; background:${PALETTE.panel2};" />
+              <button id="qb-skin-eraser-btn" class="qb-btn" style="${btn("eraser", { color: skinErasing ? PALETTE.gold : PALETTE.stone, textColor: skinErasing ? "#1a1d17" : PALETTE.text, fontSize: 8, padding: "6px 10px" })}">eraser</button>
+              <button id="qb-skin-clear-btn" class="qb-btn" style="${btn("clear", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">clear</button>
+              <button id="qb-skin-use-btn" class="qb-btn" style="${btn("use this icon", { color: PALETTE.emerald, fontSize: 8, padding: "6px 10px" })}">use this icon</button>
+            </div>
+          </div>
+          <div style="font-size:13px; color:${PALETTE.textDim}; margin-bottom:14px; margin-top:-8px;">
+            this paints a flat 16×16 pixel-art icon (not a full 3D Minecraft skin template) — click "use this icon" to load it into the preview above, then hit save.
+          </div>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">nickname (shown instead of your username)</div>
+          <input id="qb-profile-nickname" class="qb-input" maxlength="24" placeholder="${esc(me.username)}" value="${esc(profileForm.nickname)}" style="margin-bottom:14px;" />
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">status note</div>
+          <input id="qb-profile-note" class="qb-input" maxlength="60" placeholder="what are you up to?" value="${esc(profileForm.statusNote)}" style="margin-bottom:14px;" />
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">bio</div>
+          <textarea id="qb-profile-bio" class="qb-textarea" rows="3" maxlength="300" placeholder="tell people about yourself">${esc(profileForm.bio)}</textarea>
+
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin:18px 0 10px;">change password (optional)</div>
+          <input id="qb-profile-old-pass" type="password" class="qb-input" placeholder="current password" value="${esc(profileForm.oldPassword)}" style="margin-bottom:10px;" />
+          <input id="qb-profile-new-pass" type="password" class="qb-input" placeholder="new password (6+ characters)" value="${esc(profileForm.newPassword)}" />
+
+          <div style="margin-top:18px;">
+            <button id="qb-profile-save" class="qb-btn" ${posting ? "disabled" : ""} style="${btn(posting ? "saving..." : "save profile", { disabled: posting })}">${posting ? "saving..." : "save profile"}</button>
+          </div>
+        </div>
+          `;
+        })() : ""}
+      </div>
+    `;
+
+    document.getElementById("qb-switch-btn").addEventListener("click", logout);
+    document.getElementById("qb-status-select").addEventListener("change", e => setStatus(e.target.value));
+    document.getElementById("qb-tab-board").addEventListener("click", () => { tab = "board"; toast = null; render(); });
+    document.getElementById("qb-tab-post").addEventListener("click", () => { tab = "post"; toast = null; render(); });
+    document.getElementById("qb-tab-players").addEventListener("click", async () => { tab = "players"; render(); await loadAll(); render(); });
+    document.getElementById("qb-tab-search").addEventListener("click", () => { tab = "search"; render(); });
+    document.getElementById("qb-tab-info").addEventListener("click", async () => { tab = "info"; toast = null; render(); await loadAll(); render(); });
+    document.getElementById("qb-tab-community").addEventListener("click", async () => { tab = "community"; toast = null; render(); await loadAll(); render(); });
+    document.getElementById("qb-tab-leaderboard").addEventListener("click", async () => { tab = "leaderboard"; toast = null; render(); await loadAll(); render(); });
+    document.getElementById("qb-tab-profile").addEventListener("click", () => {
+      tab = "profile"; toast = null;
+      profileForm.bio = me.bio || ""; profileForm.statusNote = me.status_note || "";
+      profileForm.oldPassword = ""; profileForm.newPassword = "";
+      profileForm.avatarUrl = me.avatar_url || "";
+      profileForm.avatarSkin = me.avatar_skin || "";
+      profileForm.nickname = me.nickname || "";
+      render();
+    });
+
+    if (tab === "post") {
+      document.getElementById("qb-title").addEventListener("input", e => { draft.title = e.target.value; });
+      document.getElementById("qb-desc").addEventListener("input", e => { draft.desc = e.target.value; });
+      document.getElementById("qb-reward").addEventListener("input", e => { draft.reward = e.target.value; });
+      document.getElementById("qb-category").addEventListener("change", e => { draft.category = e.target.value; });
+      document.getElementById("qb-difficulty").addEventListener("change", e => { draft.difficulty = e.target.value; });
+      document.getElementById("qb-post-btn").addEventListener("click", postQuest);
+    }
+
+    if (tab === "board") {
+      root.querySelectorAll(".qb-filter").forEach(b => b.addEventListener("click", () => { filterCategory = b.dataset.cat; render(); }));
+      root.querySelectorAll(".qb-claim").forEach(b => b.addEventListener("click", () => claimQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-unclaim").forEach(b => b.addEventListener("click", () => unclaimQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-complete").forEach(b => b.addEventListener("click", () => completeQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-delete").forEach(b => b.addEventListener("click", () => deleteQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-admin-edit").forEach(b => b.addEventListener("click", () => {
+        const q = quests.find(x => x.id === b.dataset.id);
+        if (q) startEditQuest(q);
+      }));
+      root.querySelectorAll(".qb-save-edit").forEach(b => b.addEventListener("click", () => saveEditQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-cancel-edit").forEach(b => b.addEventListener("click", cancelEditQuest));
+      if (editingQuestId) {
+        const id = editingQuestId;
+        const t = document.getElementById(`qb-edit-title-${id}`);
+        const d = document.getElementById(`qb-edit-desc-${id}`);
+        const r = document.getElementById(`qb-edit-reward-${id}`);
+        const c = document.getElementById(`qb-edit-category-${id}`);
+        const df = document.getElementById(`qb-edit-difficulty-${id}`);
+        if (t) t.addEventListener("input", e => { editForm.title = e.target.value; });
+        if (d) d.addEventListener("input", e => { editForm.desc = e.target.value; });
+        if (r) r.addEventListener("input", e => { editForm.reward = e.target.value; });
+        if (c) c.addEventListener("change", e => { editForm.category = e.target.value; });
+        if (df) df.addEventListener("change", e => { editForm.difficulty = e.target.value; });
+      }
+    }
+
+    if (tab === "search") {
+      const input = document.getElementById("qb-search-input");
+      input.addEventListener("input", e => { searchTerm = e.target.value; searchedPlayer = null; });
+      input.addEventListener("keydown", e => { if (e.key === "Enter") searchPlayer(); });
+      document.getElementById("qb-search-btn").addEventListener("click", searchPlayer);
+      root.querySelectorAll(".qb-player-row").forEach(row => row.addEventListener("click", () => {
+        searchedPlayer = players.find(p => p.username === row.dataset.username) || searchResults.find(p => p.username === row.dataset.username);
+        render();
+      }));
+      const qrSave = document.getElementById("qb-quick-rank-save");
+      if (qrSave) {
+        qrSave.addEventListener("click", async () => {
+          const sel = document.getElementById("qb-quick-rank-select");
+          rankForm.username = qrSave.dataset.username;
+          rankForm.rank = sel.value;
+          await setPlayerRank();
+        });
+      }
+      const qsSave = document.getElementById("qb-quick-state-save");
+      if (qsSave) {
+        qsSave.addEventListener("click", async () => {
+          const sel = document.getElementById("qb-quick-state-select");
+          stateForm.username = qsSave.dataset.username;
+          stateForm.state = sel.value;
+          await setPlayerState();
+        });
+      }
+      const qbSave = document.getElementById("qb-quick-bio-save");
+      if (qbSave) {
+        qbSave.addEventListener("click", async () => {
+          const bioInput = document.getElementById("qb-quick-bio-input");
+          await setPlayerBio(qbSave.dataset.username, bioInput.value);
+        });
+      }
+      const qaSave = document.getElementById("qb-quick-avatar-save");
+      if (qaSave) {
+        qaSave.addEventListener("click", async () => {
+          const avatarInput = document.getElementById("qb-quick-avatar-input");
+          await setPlayerAvatar(qaSave.dataset.username, avatarInput.value);
+        });
+      }
+      const qiSave = document.getElementById("qb-quick-identity-save");
+      if (qiSave) {
+        qiSave.addEventListener("click", async () => {
+          const usernameInput = document.getElementById("qb-quick-username-input");
+          const nicknameInput = document.getElementById("qb-quick-nickname-input");
+          await setPlayerIdentity(qiSave.dataset.username, usernameInput.value, nicknameInput.value);
+        });
+      }
+    }
+
+    if (tab === "info") {
+      root.querySelectorAll(".qb-info-delete").forEach(b => b.addEventListener("click", () => deleteInfo(b.dataset.id)));
+      if (isAdmin()) {
+        const ii = document.getElementById("qb-info-input");
+        if (ii) ii.addEventListener("input", e => { infoForm.message = e.target.value; });
+        const ib = document.getElementById("qb-info-post-btn");
+        if (ib) ib.addEventListener("click", postInfo);
+      }
+    }
+
+    if (tab === "community") {
+      root.querySelectorAll(".qb-community-delete").forEach(b => b.addEventListener("click", () => deleteCommunity(b.dataset.id)));
+      root.querySelectorAll(".qb-community-like").forEach(b => b.addEventListener("click", () => toggleLikeCommunity(b.dataset.id)));
+      root.querySelectorAll(".qb-community-reply-toggle").forEach(b => b.addEventListener("click", () => toggleReplyBox(b.dataset.id)));
+      root.querySelectorAll(".qb-community-reply-send").forEach(b => b.addEventListener("click", () => postReply(b.dataset.id)));
+      root.querySelectorAll(".qb-community-edit").forEach(b => b.addEventListener("click", () => {
+        const post = communityPosts.find(p => p.id === b.dataset.id);
+        if (post) startEditCommunity(post);
+      }));
+      root.querySelectorAll(".qb-community-save-edit").forEach(b => b.addEventListener("click", () => saveEditCommunity(b.dataset.id)));
+      root.querySelectorAll(".qb-community-cancel-edit").forEach(b => b.addEventListener("click", cancelEditCommunity));
+      if (me) {
+        const ci = document.getElementById("qb-community-input");
+        if (ci) ci.addEventListener("input", e => { communityForm.message = e.target.value; });
+        const cb = document.getElementById("qb-community-post-btn");
+        if (cb) cb.addEventListener("click", postCommunity);
+      }
+      if (replyOpenId) {
+        const ri = document.getElementById(`qb-reply-input-${replyOpenId}`);
+        if (ri) ri.addEventListener("input", e => { replyForm.message = e.target.value; });
+      }
+      if (editingCommunityId) {
+        const ei = document.getElementById(`qb-community-edit-input-${editingCommunityId}`);
+        if (ei) ei.addEventListener("input", e => { editCommunityForm.message = e.target.value; });
+      }
+    }
+
+    if (tab === "leaderboard" && isAdmin()) {
+      const su = document.getElementById("qb-score-username");
+      const sv = document.getElementById("qb-score-value");
+      if (su) su.addEventListener("input", e => { scoreForm.username = e.target.value; });
+      if (sv) sv.addEventListener("input", e => { scoreForm.score = e.target.value; });
+      const sb2 = document.getElementById("qb-score-save");
+      if (sb2) sb2.addEventListener("click", setLeaderboardScore);
+
+      const cu = document.getElementById("qb-create-username");
+      const cr = document.getElementById("qb-create-rank");
+      const cs = document.getElementById("qb-create-state");
+      const cbtn = document.getElementById("qb-create-save");
+      if (cu) cu.addEventListener("input", e => { createAccountForm.username = e.target.value; });
+      if (cr) cr.addEventListener("change", e => { createAccountForm.rank = e.target.value; });
+      if (cs) cs.addEventListener("change", e => { createAccountForm.state = e.target.value; });
+      if (cbtn) cbtn.addEventListener("click", createAccount);
+    }
+
+    if (tab === "profile") {
+      root.querySelectorAll(".qb-skin-pick").forEach(btn => btn.addEventListener("click", () => {
+        profileForm.avatarSkin = btn.dataset.skin;
+        profileForm.avatarUrl = ""; // clear any direct URL override
+        render();
+      }));
+      document.getElementById("qb-profile-nickname").addEventListener("input", e => { profileForm.nickname = e.target.value; });
+      document.getElementById("qb-profile-note").addEventListener("input", e => { profileForm.statusNote = e.target.value; });
+      document.getElementById("qb-profile-bio").addEventListener("input", e => { profileForm.bio = e.target.value; });
+      document.getElementById("qb-profile-old-pass").addEventListener("input", e => { profileForm.oldPassword = e.target.value; });
+      document.getElementById("qb-profile-new-pass").addEventListener("input", e => { profileForm.newPassword = e.target.value; });
+      document.getElementById("qb-profile-save").addEventListener("click", saveProfile);
+      initSkinCanvas();
+    }
+
+    if (tab === "players") {
+      root.querySelectorAll(".qb-player-row").forEach(row => row.addEventListener("click", () => {
+        tab = "search";
+        searchTerm = row.dataset.username;
+        searchedPlayer = players.find(p => p.username === row.dataset.username);
+        searchResults = searchedPlayer ? [searchedPlayer] : [];
+        render();
+      }));
+    }
+  }
+
+  function communityPostCard(post, isReply) {
+    const author = players.find(pl => pl.username === post.username) || post.username;
+    const canEditOrDelete = me && (isAdmin() || me.username === post.username);
+    const isEditing = editingCommunityId === post.id;
+    const liked = communityLikedByMe(post.id);
+    const likeCount = communityLikeCount(post.id);
+    const replies = isReply ? [] : communityReplies(post.id);
+    return `
+      <div style="${isReply ? `margin-left:26px; margin-top:10px; padding-left:12px; border-left:2px solid ${PALETTE.border};` : ""}">
+        <div style="padding:14px; background:${isReply ? PALETTE.stone : PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              ${playerAvatarImg(author, 22, 18)}
+              <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(author))}</span>
+              <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}${post.edited_at ? " (edited)" : ""}</span>
+            </div>
+            ${canEditOrDelete && !isEditing ? `
+              <div style="display:flex; gap:6px;">
+                <button class="qb-btn qb-community-edit" data-id="${post.id}" style="${btn("edit", { color: PALETTE.blue, fontSize: 8, padding: "6px 10px" })}">edit</button>
+                <button class="qb-btn qb-community-delete" data-id="${post.id}" style="${btn("delete", { color: PALETTE.danger, fontSize: 8, padding: "6px 10px" })}">delete</button>
+              </div>
+            ` : ""}
+          </div>
+          ${isEditing ? `
+            <textarea id="qb-community-edit-input-${post.id}" class="qb-textarea" rows="3" maxlength="500">${esc(editCommunityForm.message)}</textarea>
+            <div style="margin-top:8px; display:flex; gap:8px;">
+              <button class="qb-btn qb-community-save-edit" data-id="${post.id}" ${savingCommunityEdit ? "disabled" : ""} style="${btn(savingCommunityEdit ? "saving..." : "save", { color: PALETTE.emerald, fontSize: 9, padding: "8px 12px", disabled: savingCommunityEdit })}">${savingCommunityEdit ? "saving..." : "save"}</button>
+              <button class="qb-btn qb-community-cancel-edit" style="${btn("cancel", { color: PALETTE.stone, fontSize: 9, padding: "8px 12px" })}">cancel</button>
+            </div>
+          ` : `
+            <div style="font-size:18px; color:${PALETTE.text}; line-height:1.4; white-space:pre-wrap;">${esc(post.message)}</div>
+            <div style="margin-top:10px; display:flex; align-items:center; gap:14px;">
+              <button class="qb-btn qb-community-like" data-id="${post.id}" ${me ? "" : "disabled"} style="${btn("like", { color: liked ? PALETTE.danger : PALETTE.stone, textColor: liked ? "#1a1d17" : PALETTE.text, fontSize: 9, padding: "6px 10px", disabled: !me })}">${liked ? "♥" : "♡"} ${likeCount}</button>
+              ${!isReply && me ? `<button class="qb-btn qb-community-reply-toggle" data-id="${post.id}" style="${btn("reply", { color: PALETTE.stone, fontSize: 9, padding: "6px 10px" })}">${replyOpenId === post.id ? "cancel" : "reply"}</button>` : ""}
+            </div>
+          `}
+          ${!isReply && replyOpenId === post.id ? `
+            <div style="margin-top:12px; padding-top:12px; border-top:2px solid ${PALETTE.border};">
+              <textarea id="qb-reply-input-${post.id}" class="qb-textarea" rows="2" maxlength="500" placeholder="write a reply...">${esc(replyForm.message)}</textarea>
+              <div style="margin-top:8px;">
+                <button class="qb-btn qb-community-reply-send" data-id="${post.id}" ${postingReply ? "disabled" : ""} style="${btn(postingReply ? "sending..." : "send reply", { color: PALETTE.emerald, fontSize: 9, padding: "8px 12px", disabled: postingReply })}">${postingReply ? "sending..." : "send reply"}</button>
+              </div>
+            </div>
+          ` : ""}
+        </div>
+        ${replies.length ? replies.map(r => communityPostCard(r, true)).join("") : ""}
+      </div>
+    `;
+  }
+
+  function render() {
+    root.style.background = PALETTE.bg;
+    root.style.minHeight = "100vh";
+    if (mustSetPassword && me) {
+      renderForcePassword();
+    } else if (!me) {
+      renderAuth();
+    } else {
+      renderMain();
+    }
+  }
+
+  window.addEventListener("beforeunload", () => {
+    if (me) {
+      navigator.sendBeacon(
+        `${SUPABASE_URL}/rest/v1/quest_players?username=eq.${encodeURIComponent(me.username)}`,
+        new Blob([JSON.stringify({ status: "offline" })], { type: "application/json" })
+      );
+    }
+  });
+
+  async function tryRestoreSession() {
+    let saved = null;
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (raw) saved = JSON.parse(raw);
+    } catch (e) { saved = null; }
+    if (!saved || !saved.username || !saved.session_token) {
+      render();
+      return;
+    }
+    loading = true; render();
+    const { data, error } = await sb.rpc("qb_check_session", { p_username: saved.username, p_session_token: saved.session_token }).single();
+    if (error || !data || !data.username) {
+      clearSession();
+      loading = false;
+      render();
+      return;
+    }
+    me = { username: data.username, status: data.status, status_note: data.status_note, bio: data.bio, rank: data.rank, state: data.state, created_at: data.created_at, last_seen: data.last_seen, session_token: saved.session_token, avatar_url: data.avatar_url || null };
+    await sb.rpc("qb_set_status", { p_username: me.username, p_session_token: me.session_token, p_status: "online" });
+    await loadAll();
+    loading = false;
+    startHeartbeat();
+    render();
+  }
+
+  tryRestoreSession();
+})();
+</script>
