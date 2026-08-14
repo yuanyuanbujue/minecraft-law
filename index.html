@@ -768,6 +768,16 @@
     await afterLogin();
   }
 
+  function cancelForcePassword() {
+    // Abandon this open-account session without setting a password, back to the login menu.
+    me = null;
+    mustSetPassword = false;
+    forcePasswordForm.newPassword = ""; forcePasswordForm.confirmPassword = "";
+    clearSession();
+    toast = null;
+    render();
+  }
+
   async function saveProfile() {
     if (profileForm.newPassword && profileForm.newPassword.length < 6) return showToast("new password needs at least 6 characters.");
     if (profileForm.newPassword && !profileForm.oldPassword) return showToast("enter your current password to change it.");
@@ -853,7 +863,8 @@
   function renderForcePassword() {
     root.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:center; min-height:100vh; padding:1.5rem;">
-        <div style="max-width:420px; width:100%; background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:24px;">
+        <div style="max-width:420px; width:100%; background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:24px; position:relative;">
+          <button id="qb-force-pass-cancel" class="qb-pixel" title="cancel and go back to login" style="position:absolute; top:10px; right:10px; background:none; border:none; color:${PALETTE.textDim}; font-size:16px; cursor:pointer; line-height:1; padding:4px 8px;">✕</button>
           <div class="qb-pixel" style="font-size:13px; color:${PALETTE.gold}; margin-bottom:10px;">set a password</div>
           <div style="font-size:15px; color:${PALETTE.textDim}; margin-bottom:16px; line-height:1.5;">
             <span style="color:${PALETTE.text};">${esc(me.username)}</span> was created by an admin with no password.
@@ -870,6 +881,7 @@
     document.getElementById("qb-force-pass-2").addEventListener("input", e => { forcePasswordForm.confirmPassword = e.target.value; });
     document.getElementById("qb-force-pass-2").addEventListener("keydown", e => { if (e.key === "Enter") submitForcePassword(); });
     document.getElementById("qb-force-pass-submit").addEventListener("click", submitForcePassword);
+    document.getElementById("qb-force-pass-cancel").addEventListener("click", cancelForcePassword);
   }
 
   function renderAuth() {
