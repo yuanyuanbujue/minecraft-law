@@ -224,9 +224,9 @@
       const { data: openRow, error: openErr } = await sb.rpc("qb_open_account_login", { p_username: u }).single();
       posting = false;
       if (openErr || !openRow) { showToast("account not found."); render(); return; }
-      // Generate a lightweight client-side session token for this session
-      const fakeToken = "open_" + Math.random().toString(36).slice(2) + Date.now();
-      me = { username: openRow.username, status: "online", status_note: openRow.status_note, bio: openRow.bio, rank: openRow.rank, state: openRow.state, created_at: openRow.created_at, last_seen: openRow.last_seen, session_token: fakeToken, avatar_url: openRow.avatar_url || null, open: true };
+      // Use the real session token the DB just generated and stored (qb_open_account_login persists it),
+      // not a fabricated one — later calls like qb_update_profile verify against the stored token.
+      me = { username: openRow.username, status: "online", status_note: openRow.status_note, bio: openRow.bio, rank: openRow.rank, state: openRow.state, created_at: openRow.created_at, last_seen: openRow.last_seen, session_token: openRow.session_token, avatar_url: openRow.avatar_url || null, open: true };
       mustSetPassword = true;
       toast = null;
       authForm.username = ""; authForm.password = "";
