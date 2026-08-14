@@ -658,6 +658,53 @@
     await loadAll(); render();
   }
 
+  function handleSkinUpload(file) {
+    if (!file) return;
+    if (!/image\/png/.test(file.type) && !/\.png$/i.test(file.name || "")) {
+      showToast("please upload a .png minecraft skin file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.width, h = img.height;
+        // Classic minecraft skins are 64x32, modern ones are 64x64. Anything else isn't a skin file.
+        if (!((w === 64 && h === 64) || (w === 64 && h === 32))) {
+          showToast(`that doesn't look like a minecraft skin (got ${w}×${h}px, expected 64×64 or 64×32).`);
+          return;
+        }
+        // Draw the uploaded skin to a working canvas at native resolution.
+        const src = document.createElement("canvas");
+        src.width = w; src.height = h;
+        const sctx = src.getContext("2d");
+        sctx.imageSmoothingEnabled = false;
+        sctx.drawImage(img, 0, 0);
+
+        // Head front face lives at (8,8) 8x8px in every skin layout.
+        // The "hat" overlay layer (second skin layer) only exists on 64x64 skins, at (40,8) 8x8px.
+        const SCALE = 16; // 8px face -> 128px crisp avatar
+        const out = document.createElement("canvas");
+        out.width = 8 * SCALE; out.height = 8 * SCALE;
+        const octx = out.getContext("2d");
+        octx.imageSmoothingEnabled = false;
+        octx.drawImage(src, 8, 8, 8, 8, 0, 0, out.width, out.height);
+        if (h === 64) {
+          octx.drawImage(src, 40, 8, 8, 8, 0, 0, out.width, out.height);
+        }
+
+        profileForm.avatarUrl = out.toDataURL("image/png");
+        profileForm.avatarSkin = "";
+        showToast('skin uploaded — face loaded into preview above. hit "save profile" to keep it.', "gold");
+        render();
+      };
+      img.onerror = () => showToast("couldn't read that file as an image.");
+      img.src = reader.result;
+    };
+    reader.onerror = () => showToast("couldn't read that file.");
+    reader.readAsDataURL(file);
+  }
+
   function initSkinCanvas() {
     const canvas = document.getElementById("qb-skin-canvas");
     if (!canvas) return;
@@ -699,13 +746,14 @@
 
     root.querySelectorAll(".qb-skin-color").forEach(b => b.addEventListener("click", () => {
       skinDrawColor = b.dataset.color;
-      skinErasing = (b.dataset.color === "#00000000");
+      skinErasing = false;
+      render(); // re-render so active ring + color display update
     }));
     const customColor = document.getElementById("qb-skin-color-custom");
-    if (customColor) customColor.addEventListener("input", e => { skinDrawColor = e.target.value; skinErasing = false; });
+    if (customColor) customColor.addEventListener("input", e => { skinDrawColor = e.target.value; skinErasing = false; render(); });
 
     const eraserBtn = document.getElementById("qb-skin-eraser-btn");
-    if (eraserBtn) eraserBtn.addEventListener("click", () => { skinErasing = true; render(); });
+    if (eraserBtn) eraserBtn.addEventListener("click", () => { skinErasing = !skinErasing; render(); });
 
     const clearBtn = document.getElementById("qb-skin-clear-btn");
     if (clearBtn) clearBtn.addEventListener("click", () => {
@@ -1332,22 +1380,76 @@
             }).join("")}
           </div>
 
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:10px;">or upload your minecraft skin (.png)</div>
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:6px;">
+            <input id="qb-skin-upload" type="file" accept="image/png" style="font-family:'VT323',monospace; font-size:14px; color:${PALETTE.textDim};" />
+          </div>
+          <div style="font-size:13px; color:${PALETTE.textDim}; margin-bottom:18px;">
+            upload the .png skin file from your minecraft skin folder (standard 64×64, or legacy 64×32) — we'll crop your character's face (including the hat layer) for your avatar.
+          </div>
+
           <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:10px;">or draw a custom icon (16×16px)</div>
           <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; margin-bottom:18px;">
-            <canvas id="qb-skin-canvas" width="256" height="256" style="border:3px solid ${PALETTE.border}; image-rendering:pixelated; cursor:crosshair; touch-action:none; background:
-              repeating-conic-gradient(#3f4436 0% 25%, #33382a 0% 50%) 0 0 / 32px 32px;"></canvas>
-            <div style="display:flex; flex-direction:column; gap:10px; min-width:140px;">
-              <div style="display:flex; flex-wrap:wrap; gap:4px; max-width:140px;">
-                ${SKIN_PALETTE.map(c => `<button class="qb-skin-color" data-color="${c}" title="${c}" style="width:20px; height:20px; border:2px solid #000; cursor:pointer; background:${c === "#00000000" ? "repeating-conic-gradient(#888 0% 25%, #bbb 0% 50%) 0 0 / 10px 10px" : c};"></button>`).join("")}
+            <div style="position:relative;">
+              <canvas id="qb-skin-canvas" width="256" height="256" style="border:3px solid ${skinErasing ? PALETTE.gold : PALETTE.emerald}; image-rendering:pixelated; cursor:crosshair; touch-action:none; display:block; background:
+                repeating-conic-gradient(#3f4436 0% 25%, #33382a 0% 50%) 0 0 / 32px 32px;"></canvas>
+              <div style="position:absolute; bottom:-24px; left:0; font-family:'VT323',monospace; font-size:13px; color:${PALETTE.textDim};">
+                ${skinErasing ? "🧹 erasing" : "✏️ drawing"}
               </div>
-              <input id="qb-skin-color-custom" type="color" value="#e0554a" style="width:60px; height:28px; border:2px solid #000; padding:0; cursor:pointer; background:${PALETTE.panel2};" />
-              <button id="qb-skin-eraser-btn" class="qb-btn" style="${btn("eraser", { color: skinErasing ? PALETTE.gold : PALETTE.stone, textColor: skinErasing ? "#1a1d17" : PALETTE.text, fontSize: 8, padding: "6px 10px" })}">eraser</button>
-              <button id="qb-skin-clear-btn" class="qb-btn" style="${btn("clear", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">clear</button>
-              <button id="qb-skin-use-btn" class="qb-btn" style="${btn("use this icon", { color: PALETTE.emerald, fontSize: 8, padding: "6px 10px" })}">use this icon</button>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:10px; min-width:160px;">
+
+              <!-- Active color indicator -->
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div style="
+                  width:32px; height:32px; border:3px solid ${PALETTE.emerald};
+                  background:${skinErasing ? "repeating-conic-gradient(#888 0% 25%, #bbb 0% 50%) 0 0 / 10px 10px" : skinDrawColor};
+                  flex-shrink:0;
+                "></div>
+                <div>
+                  <div style="font-family:'Press Start 2P',monospace; font-size:7px; color:${PALETTE.textDim};">active color</div>
+                  <div style="font-family:'VT323',monospace; font-size:13px; color:${PALETTE.text};">${skinErasing ? "eraser" : skinDrawColor}</div>
+                </div>
+              </div>
+
+              <!-- Palette -->
+              <div>
+                <div style="font-family:'Press Start 2P',monospace; font-size:7px; color:${PALETTE.textDim}; margin-bottom:5px;">palette</div>
+                <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:3px; max-width:100px;">
+                  ${SKIN_PALETTE.filter(c => c !== "#00000000").map(c => {
+                    const isActive = !skinErasing && skinDrawColor === c;
+                    return `<button class="qb-skin-color" data-color="${c}" title="${c}" style="
+                      width:22px; height:22px; cursor:pointer;
+                      border:${isActive ? "3px solid " + PALETTE.emerald : "2px solid #000"};
+                      background:${c};
+                      transform:${isActive ? "scale(1.15)" : "scale(1)"};
+                      transition:transform 0.05s;
+                    "></button>`;
+                  }).join("")}
+                </div>
+              </div>
+
+              <!-- Custom color picker -->
+              <div>
+                <div style="font-family:'Press Start 2P',monospace; font-size:7px; color:${PALETTE.textDim}; margin-bottom:5px;">custom color</div>
+                <input id="qb-skin-color-custom" type="color" value="${skinDrawColor}" style="width:100%; height:32px; border:2px solid ${PALETTE.border}; padding:2px; cursor:pointer; background:${PALETTE.panel2}; display:block;" />
+              </div>
+
+              <!-- Tool buttons -->
+              <div style="display:flex; flex-direction:column; gap:6px;">
+                <button id="qb-skin-eraser-btn" class="qb-btn" style="${btn("eraser", { color: skinErasing ? PALETTE.gold : PALETTE.stone, textColor: skinErasing ? "#1a1d17" : PALETTE.text, fontSize: 8, padding: "8px 10px" })}">${skinErasing ? "✓ eraser on" : "eraser"}</button>
+                <button id="qb-skin-clear-btn" class="qb-btn" style="${btn("clear canvas", { color: PALETTE.danger, textColor: "#fff", fontSize: 8, padding: "8px 10px" })}">clear canvas</button>
+              </div>
+
+              <!-- Use icon button — prominent CTA -->
+              <button id="qb-skin-use-btn" class="qb-btn" style="
+                ${btn("✔ use this icon", { color: PALETTE.emerald, fontSize: 9, padding: "12px 10px" })}
+                width:100%; margin-top:4px; letter-spacing:0;
+              ">✔ use this icon</button>
             </div>
           </div>
-          <div style="font-size:13px; color:${PALETTE.textDim}; margin-bottom:14px; margin-top:-8px;">
-            this paints a flat 16×16 pixel-art icon (not a full 3D Minecraft skin template) — click "use this icon" to load it into the preview above, then hit save.
+          <div style="font-size:13px; color:${PALETTE.textDim}; margin-bottom:14px; margin-top:28px;">
+            paint a 16×16 pixel icon — click "✔ use this icon" to load it into the preview above, then hit save profile.
           </div>
 
           <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">nickname (shown instead of your username)</div>
@@ -1545,6 +1647,8 @@
       document.getElementById("qb-profile-old-pass").addEventListener("input", e => { profileForm.oldPassword = e.target.value; });
       document.getElementById("qb-profile-new-pass").addEventListener("input", e => { profileForm.newPassword = e.target.value; });
       document.getElementById("qb-profile-save").addEventListener("click", saveProfile);
+      const skinUpload = document.getElementById("qb-skin-upload");
+      if (skinUpload) skinUpload.addEventListener("change", e => handleSkinUpload(e.target.files && e.target.files[0]));
       initSkinCanvas();
     }
 
