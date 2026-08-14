@@ -216,9 +216,8 @@
     posting = true; render();
 
     // First check: does this account have no password? (admin-created open account)
-    // We check the public view for password_hash being null
-    const { data: accountCheck } = await sb.from(PLAYERS_TABLE).select("username, password_hash").ilike("username", u).limit(1).single();
-    const isOpenAccount = accountCheck && (accountCheck.password_hash === null || accountCheck.password_hash === "");
+    // Uses a SECURITY DEFINER RPC (direct table select is blocked by RLS and never exposes password_hash to the client)
+    const { data: isOpenAccount } = await sb.rpc("qb_check_open_account", { p_username: u });
 
     if (isOpenAccount) {
       // Anyone can sign in — but must set a password before they can use the account.
