@@ -75,11 +75,46 @@
     left_law: { label: "left law", color: "#e0854a", dark: "#4a2a0b" }
   };
   const DIFFICULTY = {
-    easy: { label: "easy", color: PALETTE.emerald, dark: "#0b3d16" },
-    medium: { label: "medium", color: PALETTE.gold, dark: "#4a3b06" },
-    hard: { label: "hard", color: "#e0854a", dark: "#4a2a0b" },
-    legendary: { label: "impossible", color: PALETTE.danger, dark: "#4a1010" }
+    easy: { label: "easy", color: PALETTE.emerald, dark: "#0b3d16", points: 10 },
+    medium: { label: "medium", color: PALETTE.gold, dark: "#4a3b06", points: 25 },
+    hard: { label: "hard", color: "#e0854a", dark: "#4a2a0b", points: 50 },
+    legendary: { label: "impossible", color: PALETTE.danger, dark: "#4a1010", points: 100 }
   };
+
+  // Visibility levels: who is allowed to see a quest / info post / community post
+  const VISIBILITY = {
+    all:      { label: "everyone",          short: "public",       color: PALETTE.emerald,   dark: "#0b3d16" },
+    member:   { label: "law members only",  short: "members",      color: PALETTE.blue,      dark: "#0b2a4a" },
+    commander:{ label: "commander & leader",short: "cmd+",         color: PALETTE.gold,      dark: "#4a3b06" },
+    law:      { label: "leader only",       short: "leader",       color: PALETTE.danger,    dark: "#4a1010" }
+  };
+
+  // Returns true if the current user (me) is allowed to see a post with the given visibility key.
+  // Admin always sees everything. Unranked/no-account users only see "all" posts.
+  function canSeePost(visibility) {
+    if (isAdmin()) return true;
+    const v = visibility || "all";
+    if (v === "all") return true;
+    if (!me) return false; // must be logged in for anything else
+    if (v === "member") return me.state === "member";
+    if (v === "commander") return me.rank === "black" || me.rank === "law";
+    if (v === "law") return me.rank === "law";
+    return true;
+  }
+
+  function visibilityBadge(v) {
+    const cfg = VISIBILITY[v] || VISIBILITY.all;
+    return `<span class="qb-badge" style="background:${cfg.dark}; color:${cfg.color}; border:2px solid #000;">👁 ${esc(cfg.short)}</span>`;
+  }
+
+  // Dropdown HTML for picking visibility in a post form
+  function visibilitySelect(id, currentValue) {
+    return `
+      <select id="${id}" class="qb-select">
+        ${Object.entries(VISIBILITY).map(([k, v]) => `<option value="${k}" ${currentValue === k ? "selected" : ""}>${v.label}</option>`).join("")}
+      </select>
+    `;
+  }
 
   const root = document.getElementById("qb-root");
 
@@ -95,7 +130,7 @@
   let searchResults = [];
   let searchedPlayer = null;
   const authForm = { username: "", password: "", rank: "white" };
-  const draft = { title: "", desc: "", reward: "", category: "general", difficulty: "easy" };
+  const draft = { title: "", desc: "", reward: "", category: "general", difficulty: "easy", visibility: "all" };
   let heartbeatTimer = null;
   const profileForm = { bio: "", statusNote: "", oldPassword: "", newPassword: "", avatarUrl: "", avatarSkin: "", nickname: "" };
   const bioEditForm = { username: "", bio: "" }; // admin: editing another player's bio/description
@@ -105,7 +140,7 @@
   let skinErasing = false;
   let skinCanvasSnapshot = null; // dataURL — persists drawing progress across re-renders
   let editingQuestId = null; // admin: quest currently being edited inline
-  const editForm = { title: "", desc: "", reward: "", category: "general", difficulty: "easy" };
+  const editForm = { title: "", desc: "", reward: "", category: "general", difficulty: "easy", visibility: "all" };
   let leaderboard = [];
   let notifOpen = false;
   let notifSettingsOpen = false;
@@ -117,11 +152,11 @@
   const stateForm = { username: "", state: "member" };
   const createAccountForm = { username: "", rank: "white", state: "member" };
   let infoPosts = [];
-  const infoForm = { message: "" };
+  const infoForm = { message: "", visibility: "all" };
   let postingInfo = false;
   let communityPosts = [];
   let communityLikes = []; // [{post_id, username}]
-  const communityForm = { message: "" };
+  const communityForm = { message: "", visibility: "all" };
   let postingCommunity = false;
   let replyOpenId = null; // id of post currently showing a reply box
   const replyForm = { message: "" };
@@ -261,6 +296,7 @@
   async function afterLogin() {
     loading = true; render();
     await loadAll();
+    setupRealtime();
     loading = false;
     startHeartbeat();
     loadNotifSeen();
@@ -424,7 +460,8 @@
     posting = true; render();
     const { error } = await sb.from("quests").insert({
       title: draft.title.trim(), description: draft.desc.trim(), reward: draft.reward.trim(),
-      poster: me.username, category: draft.category, difficulty: draft.difficulty
+      poster: me.username, category: draft.category, difficulty: draft.difficulty,
+      visibility: draft.visibility || "all"
     });
     posting = false;
     if (error) { showToast("couldn't post the quest: " + error.message); render(); return; }
@@ -444,8 +481,32 @@
     await loadAll(); render();
   }
   async function completeQuest(id) {
+    const q = quests.find(x => x.id === id);
     const { error } = await sb.rpc("qb_complete_quest", { p_username: me.username, p_session_token: me.session_token, p_quest_id: id });
     if (error) { showToast("couldn't complete: " + error.message); return; }
+
+    // Award the claimer score based on the quest's difficulty.
+    if (q && q.claimed_by) {
+      const points = (DIFFICULTY[q.difficulty] || DIFFICULTY.easy).points;
+      let scoreError;
+      try {
+        ({ error: scoreError } = await sb.rpc("qb_award_quest_score", {
+          p_username: me.username, p_session_token: me.session_token,
+          p_target_username: q.claimed_by, p_points: points, p_quest_id: id
+        }));
+      } catch (e) { scoreError = e; }
+      if (scoreError) {
+        const m = scoreError.message || "";
+        showToast(
+          m.includes("does not exist") || m.includes("qb_award_quest_score")
+            ? "quest completed, but scoring needs a small database update first — see the setup note below the app."
+            : "quest completed, but couldn't award score: " + m
+        );
+      } else {
+        showToast(`quest completed! ${esc(displayName(players.find(p => p.username === q.claimed_by) || q.claimed_by))} earned ${points} points.`, "gold");
+      }
+    }
+
     await loadAll(); render();
   }
 
@@ -530,7 +591,7 @@
   function startEditQuest(q) {
     editingQuestId = q.id;
     editForm.title = q.title; editForm.desc = q.description || ""; editForm.reward = q.reward;
-    editForm.category = q.category; editForm.difficulty = q.difficulty;
+    editForm.category = q.category; editForm.difficulty = q.difficulty; editForm.visibility = q.visibility || "all";
     render();
   }
   function cancelEditQuest() {
@@ -549,11 +610,13 @@
         p_title: editForm.title.trim(), p_description: editForm.desc.trim(), p_reward: editForm.reward.trim(),
         p_category: editForm.category, p_difficulty: editForm.difficulty
       }));
+      // Also patch visibility directly (RPC may not have this column yet; ignore error silently)
+      if (!error) await sb.from("quests").update({ visibility: editForm.visibility || "all" }).eq("id", id);
     } else {
       // Quest owner editing their own quest — same pattern as their direct delete.
       ({ error } = await sb.from("quests").update({
         title: editForm.title.trim(), description: editForm.desc.trim(), reward: editForm.reward.trim(),
-        category: editForm.category, difficulty: editForm.difficulty
+        category: editForm.category, difficulty: editForm.difficulty, visibility: editForm.visibility || "all"
       }).eq("id", id).eq("poster", me.username));
     }
     if (error) { showToast("couldn't save: " + error.message); return; }
@@ -662,6 +725,11 @@
       ({ error } = await sb.rpc("qb_admin_post_info", {
         p_username: me.username, p_session_token: me.session_token, p_message: msg
       }));
+      // Also store visibility (column may not exist yet on older DBs; silently ignored on error)
+      if (!error) {
+        const { data: lastInfo } = await sb.from("quest_info").select("id").order("created_at", { ascending: false }).limit(1).single();
+        if (lastInfo && lastInfo.id) await sb.from("quest_info").update({ visibility: infoForm.visibility || "all" }).eq("id", lastInfo.id);
+      }
     } catch (e) { error = e; }
     postingInfo = false;
     if (error) {
@@ -702,6 +770,11 @@
       ({ error } = await sb.rpc("qb_post_community", {
         p_username: me.username, p_session_token: me.session_token, p_message: msg
       }));
+      // Patch visibility on the freshly inserted row
+      if (!error) {
+        const { data: lastPost } = await sb.from("quest_community").select("id").order("created_at", { ascending: false }).limit(1).single();
+        if (lastPost && lastPost.id) await sb.from("quest_community").update({ visibility: communityForm.visibility || "all" }).eq("id", lastPost.id);
+      }
     } catch (e) { error = e; }
     postingCommunity = false;
     if (error) {
@@ -1175,7 +1248,7 @@
 
   function diffBadge(diff) {
     const d = DIFFICULTY[diff] || DIFFICULTY.easy;
-    return `<span class="qb-badge" style="background:${d.dark}; color:${d.color}; border:1px solid ${d.color};">${esc(d.label)}</span>`;
+    return `<span class="qb-badge" style="background:${d.dark}; color:${d.color}; border:1px solid ${d.color};">${esc(d.label)} · ${d.points}pt</span>`;
   }
   function catBadge(cat) {
     return `<span class="qb-badge" style="background:${PALETTE.stone}; color:${PALETTE.textDim}; border:1px solid ${PALETTE.border};">${esc(cat)}</span>`;
@@ -1200,6 +1273,9 @@
             <select id="qb-edit-difficulty-${q.id}" class="qb-select" style="flex:1; min-width:120px;">
               ${Object.keys(DIFFICULTY).map(d => `<option value="${d}" ${editForm.difficulty === d ? "selected" : ""}>${DIFFICULTY[d].label}</option>`).join("")}
             </select>
+            <select id="qb-edit-visibility-${q.id}" class="qb-select" style="flex:1; min-width:140px;" title="who can see this quest">
+              ${Object.entries(VISIBILITY).map(([k, v]) => `<option value="${k}" ${editForm.visibility === k ? "selected" : ""}>${v.label}</option>`).join("")}
+            </select>
           </div>
           <div style="display:flex; gap:8px;">
             <button class="qb-btn qb-save-edit" data-id="${q.id}" style="${btn("save", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">save</button>
@@ -1214,7 +1290,7 @@
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
           <div style="flex:1; min-width:200px;">
             <div style="display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
-              ${diffBadge(q.difficulty)}${catBadge(q.category)}
+              ${diffBadge(q.difficulty)}${catBadge(q.category)}${q.visibility && q.visibility !== "all" ? visibilityBadge(q.visibility) : ""}
             </div>
             <div class="qb-pixel" style="font-size:12px; color:${PALETTE.text}; margin-bottom:8px; line-height:1.5;">${esc(q.title)}</div>
             ${q.description ? `<div style="font-size:18px; color:${PALETTE.textDim}; margin-bottom:10px; line-height:1.4;">${esc(q.description)}</div>` : ""}
@@ -1247,7 +1323,7 @@
             </label>
           ` : ""}
           ${!q.completed && claimedByMe && q.proof_photo ? `<button class="qb-btn qb-proof-remove" data-id="${q.id}" style="${btn("remove photo", { color: PALETTE.danger, fontSize: 9, padding: "8px 12px" })}">remove photo</button>` : ""}
-          ${!q.completed && isMine && q.claimed_by ? `<button class="qb-btn qb-complete" data-id="${q.id}" style="${btn("complete", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">mark complete & pay out</button>` : ""}
+          ${!q.completed && isMine && q.claimed_by ? `<button class="qb-btn qb-complete" data-id="${q.id}" style="${btn("complete", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">mark complete & pay out (+${(DIFFICULTY[q.difficulty] || DIFFICULTY.easy).points} pts)</button>` : ""}
           ${!q.completed && isMine ? `<button class="qb-btn qb-admin-edit" data-id="${q.id}" style="${btn("edit", { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })}">edit</button>` : ""}
           ${admin && !isMine ? `<button class="qb-btn qb-admin-edit" data-id="${q.id}" style="${btn("edit (admin)", { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })}">edit (admin)</button>` : ""}
           ${isMine || admin ? `<button class="qb-btn qb-delete" data-id="${q.id}" style="${btn(admin && !isMine ? "delete (admin)" : "delete", { color: PALETTE.danger, fontSize: 9, padding: "8px 12px" })}">${admin && !isMine ? "delete (admin)" : "delete"}</button>` : ""}
@@ -1382,7 +1458,8 @@
 
   function renderMain() {
     const myStatus = me ? me.status : "online";
-    const visibleQuests = filterCategory === "all" ? quests : quests.filter(q => q.category === filterCategory);
+    const visibleQuests = (filterCategory === "all" ? quests : quests.filter(q => q.category === filterCategory))
+      .filter(q => canSeePost(q.visibility));
     // While editing the profile, reflect the in-progress skin/avatar pick in the header icon too,
     // same as the live "preview" box on the profile tab — not just after saving.
     const headerPlayer = tab === "profile"
@@ -1449,6 +1526,11 @@
           <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin:14px 0 6px;">prize</div>
           <input id="qb-reward" class="qb-input" placeholder="64 Netherite Blocks" maxlength="80" value="${esc(draft.reward)}" />
 
+          <div style="margin-top:14px;">
+            <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">who can see this quest?</div>
+            ${visibilitySelect("qb-visibility", draft.visibility)}
+          </div>
+
           <div style="margin-top:18px;">
             <button id="qb-post-btn" class="qb-btn" ${posting ? "disabled" : ""} style="${btn(posting ? "posting..." : "post quest", { disabled: posting })}">${posting ? "posting..." : "post quest"}</button>
           </div>
@@ -1478,19 +1560,26 @@
               <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:8px;">post an announcement</div>
               <textarea id="qb-info-input" class="qb-textarea" rows="3" maxlength="500" placeholder="announcement for everyone...">${esc(infoForm.message)}</textarea>
               <div style="margin-top:10px;">
+                <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">who can see this?</div>
+                ${visibilitySelect("qb-info-visibility", infoForm.visibility)}
+              </div>
+              <div style="margin-top:10px;">
                 <button id="qb-info-post-btn" class="qb-btn" ${postingInfo ? "disabled" : ""} style="${btn(postingInfo ? "posting..." : "post", { color: PALETTE.blue, disabled: postingInfo })}">${postingInfo ? "posting..." : "post"}</button>
               </div>
             </div>
           ` : ""}
-          ${infoPosts.length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">no announcements yet.</div>` : `
+          ${(() => {
+            const visibleInfo = infoPosts.filter(p => canSeePost(p.visibility));
+            return visibleInfo.length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">no announcements yet.</div>` : `
             <div style="display:flex; flex-direction:column; gap:12px;">
-              ${infoPosts.map(post => `
+              ${visibleInfo.map(post => `
                 <div style="padding:14px; background:${PALETTE.panel2}; border:2px solid ${PALETTE.border};">
                   <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
-                    <div style="display:flex; align-items:center; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                       ${playerAvatarImg(players.find(pl => pl.username === post.username) || post.username, 22, 18)}
                       <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(players.find(pl => pl.username === post.username) || post.username))}</span>
                       <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}</span>
+                      ${post.visibility && post.visibility !== "all" ? visibilityBadge(post.visibility) : ""}
                     </div>
                     ${isAdmin() ? `<button class="qb-btn qb-info-delete" data-id="${post.id}" style="${btn("delete", { color: PALETTE.danger, fontSize: 8, padding: "6px 10px" })}">delete</button>` : ""}
                   </div>
@@ -1498,7 +1587,7 @@
                 </div>
               `).join("")}
             </div>
-          `}
+          `; })()}
         </div>
       ` : ""}
 
@@ -1510,13 +1599,17 @@
               <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:8px;">share whatever you like</div>
               <textarea id="qb-community-input" class="qb-textarea" rows="3" maxlength="500" placeholder="say something to the community...">${esc(communityForm.message)}</textarea>
               <div style="margin-top:10px;">
+                <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:6px;">who can see this?</div>
+                ${visibilitySelect("qb-community-visibility", communityForm.visibility)}
+              </div>
+              <div style="margin-top:10px;">
                 <button id="qb-community-post-btn" class="qb-btn" ${postingCommunity ? "disabled" : ""} style="${btn(postingCommunity ? "posting..." : "post", { color: PALETTE.emerald, disabled: postingCommunity })}">${postingCommunity ? "posting..." : "post"}</button>
               </div>
             </div>
           ` : `<div style="font-size:16px; color:${PALETTE.textDim}; margin-bottom:20px;">log in to post.</div>`}
-          ${communityPosts.filter(p => !p.parent_id).length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">nothing posted yet — be the first.</div>` : `
+          ${communityPosts.filter(p => !p.parent_id && canSeePost(p.visibility)).length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">nothing posted yet — be the first.</div>` : `
             <div style="display:flex; flex-direction:column; gap:12px;">
-              ${communityPosts.filter(p => !p.parent_id).slice().reverse().map(post => communityPostCard(post, false)).join("")}
+              ${communityPosts.filter(p => !p.parent_id && canSeePost(p.visibility)).slice().reverse().map(post => communityPostCard(post, false)).join("")}
             </div>
           `}
         </div>
@@ -1785,6 +1878,7 @@
       document.getElementById("qb-reward").addEventListener("input", e => { draft.reward = e.target.value; });
       document.getElementById("qb-category").addEventListener("change", e => { draft.category = e.target.value; });
       document.getElementById("qb-difficulty").addEventListener("change", e => { draft.difficulty = e.target.value; });
+      document.getElementById("qb-visibility").addEventListener("change", e => { draft.visibility = e.target.value; });
       document.getElementById("qb-post-btn").addEventListener("click", postQuest);
     }
 
@@ -1815,11 +1909,13 @@
         const r = document.getElementById(`qb-edit-reward-${id}`);
         const c = document.getElementById(`qb-edit-category-${id}`);
         const df = document.getElementById(`qb-edit-difficulty-${id}`);
+        const ev = document.getElementById(`qb-edit-visibility-${id}`);
         if (t) t.addEventListener("input", e => { editForm.title = e.target.value; });
         if (d) d.addEventListener("input", e => { editForm.desc = e.target.value; });
         if (r) r.addEventListener("input", e => { editForm.reward = e.target.value; });
         if (c) c.addEventListener("change", e => { editForm.category = e.target.value; });
         if (df) df.addEventListener("change", e => { editForm.difficulty = e.target.value; });
+        if (ev) ev.addEventListener("change", e => { editForm.visibility = e.target.value; });;
       }
     }
 
@@ -1879,6 +1975,8 @@
       if (isAdmin()) {
         const ii = document.getElementById("qb-info-input");
         if (ii) ii.addEventListener("input", e => { infoForm.message = e.target.value; });
+        const iv = document.getElementById("qb-info-visibility");
+        if (iv) iv.addEventListener("change", e => { infoForm.visibility = e.target.value; });
         const ib = document.getElementById("qb-info-post-btn");
         if (ib) ib.addEventListener("click", postInfo);
       }
@@ -1898,6 +1996,8 @@
       if (me) {
         const ci = document.getElementById("qb-community-input");
         if (ci) ci.addEventListener("input", e => { communityForm.message = e.target.value; });
+        const cv = document.getElementById("qb-community-visibility");
+        if (cv) cv.addEventListener("change", e => { communityForm.visibility = e.target.value; });
         const cb = document.getElementById("qb-community-post-btn");
         if (cb) cb.addEventListener("click", postCommunity);
       }
@@ -1972,6 +2072,7 @@
               ${playerAvatarImg(author, 22, 18)}
               <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(author))}</span>
               <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}${post.edited_at ? " (edited)" : ""}</span>
+              ${post.visibility && post.visibility !== "all" ? visibilityBadge(post.visibility) : ""}
             </div>
             ${canEditOrDelete && !isEditing ? `
               <div style="display:flex; gap:6px;">
@@ -2032,6 +2133,45 @@
     }
   });
 
+  // ---- Realtime ----
+  // Subscribes to live Postgres changes on every table the board reads from,
+  // so all connected clients see new quests, claims, scores, posts, etc.
+  // instantly without needing to refresh or poll.
+  let realtimeChannel = null;
+  let realtimeRefreshTimer = null;
+
+  function scheduleRealtimeRefresh() {
+    // Debounce bursts of changes (e.g. several rows updating at once) into one reload.
+    if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
+    realtimeRefreshTimer = setTimeout(async () => {
+      await loadAll();
+      render();
+    }, 250);
+  }
+
+  function setupRealtime() {
+    if (realtimeChannel) return; // already subscribed
+    realtimeChannel = sb.channel("qb-realtime-all")
+      .on("postgres_changes", { event: "*", schema: "public", table: "quests" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: PLAYERS_TABLE }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quest_leaderboard" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quest_info" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quest_community" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quest_community_likes" }, scheduleRealtimeRefresh)
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          // Realtime couldn't connect (e.g. replication not enabled on these tables yet).
+          // The board still works fine via manual refresh/actions, just not live.
+          realtimeChannel = null;
+        }
+      });
+  }
+
+  window.addEventListener("beforeunload", () => {
+    if (realtimeChannel) sb.removeChannel(realtimeChannel);
+  });
+  // ---- End realtime ----
+
   async function tryRestoreSession() {
     let saved = null;
     try {
@@ -2039,6 +2179,8 @@
       if (raw) saved = JSON.parse(raw);
     } catch (e) { saved = null; }
     if (!saved || !saved.username || !saved.session_token) {
+      await loadAll();
+      setupRealtime();
       render();
       return;
     }
@@ -2047,12 +2189,15 @@
     if (error || !data || !data.username) {
       clearSession();
       loading = false;
+      await loadAll();
+      setupRealtime();
       render();
       return;
     }
     me = { username: data.username, status: data.status, status_note: data.status_note, bio: data.bio, rank: data.rank, state: data.state, created_at: data.created_at, last_seen: data.last_seen, session_token: saved.session_token, avatar_url: data.avatar_url || null };
     await sb.rpc("qb_set_status", { p_username: me.username, p_session_token: me.session_token, p_status: "online" });
     await loadAll();
+    setupRealtime();
     loading = false;
     startHeartbeat();
     loadNotifSeen();
