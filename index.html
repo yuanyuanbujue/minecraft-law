@@ -126,6 +126,7 @@
   let toast = null; // { text, kind }
   let posting = false;
   let filterCategory = "all";
+  let filterRank = "all";
   let searchTerm = "";
   let searchResults = [];
   let searchedPlayer = null;
@@ -804,9 +805,15 @@
     return !!me && communityLikes.some(l => l.post_id === postId && l.username === me.username);
   }
 
-  function toggleReplyBox(id) {
-    replyOpenId = replyOpenId === id ? null : id;
-    replyForm.message = "";
+  function toggleReplyBox(id, targetUsername) {
+    if (replyOpenId === id) {
+      replyOpenId = null;
+      replyForm.message = "";
+    } else {
+      replyOpenId = id;
+      const author = players.find(pl => pl.username === targetUsername) || targetUsername;
+      replyForm.message = `@${displayName(author)} `;
+    }
     render();
   }
 
@@ -1290,7 +1297,7 @@
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
           <div style="flex:1; min-width:200px;">
             <div style="display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
-              ${diffBadge(q.difficulty)}${catBadge(q.category)}${q.visibility && q.visibility !== "all" ? visibilityBadge(q.visibility) : ""}
+              ${diffBadge(q.difficulty)}${catBadge(q.category)}${visibilityBadge(q.visibility || "all")}
             </div>
             <div class="qb-pixel" style="font-size:12px; color:${PALETTE.text}; margin-bottom:8px; line-height:1.5;">${esc(q.title)}</div>
             ${q.description ? `<div style="font-size:18px; color:${PALETTE.textDim}; margin-bottom:10px; line-height:1.4;">${esc(q.description)}</div>` : ""}
@@ -1579,7 +1586,7 @@
                       ${playerAvatarImg(players.find(pl => pl.username === post.username) || post.username, 22, 18)}
                       <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(players.find(pl => pl.username === post.username) || post.username))}</span>
                       <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}</span>
-                      ${post.visibility && post.visibility !== "all" ? visibilityBadge(post.visibility) : ""}
+                      ${visibilityBadge(post.visibility || "all")}
                     </div>
                     ${isAdmin() ? `<button class="qb-btn qb-info-delete" data-id="${post.id}" style="${btn("delete", { color: PALETTE.danger, fontSize: 8, padding: "6px 10px" })}">delete</button>` : ""}
                   </div>
@@ -1609,7 +1616,7 @@
           ` : `<div style="font-size:16px; color:${PALETTE.textDim}; margin-bottom:20px;">log in to post.</div>`}
           ${communityPosts.filter(p => !p.parent_id && canSeePost(p.visibility)).length === 0 ? `<div style="font-size:16px; color:${PALETTE.textDim};">nothing posted yet — be the first.</div>` : `
             <div style="display:flex; flex-direction:column; gap:12px;">
-              ${communityPosts.filter(p => !p.parent_id && canSeePost(p.visibility)).slice().reverse().map(post => communityPostCard(post, false)).join("")}
+              ${communityPosts.filter(p => !p.parent_id && canSeePost(p.visibility)).slice().reverse().map(post => communityPostCard(post, 0)).join("")}
             </div>
           `}
         </div>
@@ -1617,8 +1624,15 @@
 
       ${tab === "players" ? `
         <div class="qb-pixel" style="font-size:9px; color:${PALETTE.textDim}; margin-bottom:12px;">${players.length} account${players.length === 1 ? "" : "s"} on this board</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+          <button class="qb-btn qb-rank-filter" data-rank="all" style="${btn("all", { color: filterRank === "all" ? PALETTE.blue : PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">all</button>
+          ${Object.keys(RANKS).map(r => `<button class="qb-btn qb-rank-filter" data-rank="${r}" style="${btn(RANKS[r].short, { color: filterRank === r ? PALETTE.blue : PALETTE.stone, textColor: PALETTE.text, fontSize: 8, padding: "6px 10px" })}">${RANKS[r].short}</button>`).join("")}
+        </div>
         <div style="display:flex; flex-direction:column; gap:8px;">
-          ${players.map(playerRow).join("") || `<div class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim};">no players yet.</div>`}
+          ${(() => {
+            const filteredPlayers = filterRank === "all" ? players : players.filter(p => (p.rank || "none") === filterRank);
+            return filteredPlayers.map(playerRow).join("") || `<div class="qb-pixel" style="font-size:10px; color:${PALETTE.textDim};">no players match this rank.</div>`;
+          })()}
         </div>
       ` : ""}
 
@@ -1985,7 +1999,7 @@
     if (tab === "community") {
       root.querySelectorAll(".qb-community-delete").forEach(b => b.addEventListener("click", () => deleteCommunity(b.dataset.id)));
       root.querySelectorAll(".qb-community-like").forEach(b => b.addEventListener("click", () => toggleLikeCommunity(b.dataset.id)));
-      root.querySelectorAll(".qb-community-reply-toggle").forEach(b => b.addEventListener("click", () => toggleReplyBox(b.dataset.id)));
+      root.querySelectorAll(".qb-community-reply-toggle").forEach(b => b.addEventListener("click", () => toggleReplyBox(b.dataset.id, b.dataset.target)));
       root.querySelectorAll(".qb-community-reply-send").forEach(b => b.addEventListener("click", () => postReply(b.dataset.id)));
       root.querySelectorAll(".qb-community-edit").forEach(b => b.addEventListener("click", () => {
         const post = communityPosts.find(p => p.id === b.dataset.id);
@@ -2047,6 +2061,7 @@
     }
 
     if (tab === "players") {
+      root.querySelectorAll(".qb-rank-filter").forEach(b => b.addEventListener("click", () => { filterRank = b.dataset.rank; render(); }));
       root.querySelectorAll(".qb-player-row").forEach(row => row.addEventListener("click", () => {
         tab = "search";
         searchTerm = row.dataset.username;
@@ -2057,22 +2072,26 @@
     }
   }
 
-  function communityPostCard(post, isReply) {
+  function communityPostCard(post, depth) {
+    depth = depth || 0;
     const author = players.find(pl => pl.username === post.username) || post.username;
     const canEditOrDelete = me && (isAdmin() || me.username === post.username);
     const isEditing = editingCommunityId === post.id;
     const liked = communityLikedByMe(post.id);
     const likeCount = communityLikeCount(post.id);
-    const replies = isReply ? [] : communityReplies(post.id);
+    const replies = communityReplies(post.id);
+    const isReply = depth > 0;
+    // cap visual indent so very deep threads don't run off the screen
+    const indentPx = Math.min(depth, 5) * 26;
     return `
-      <div style="${isReply ? `margin-left:26px; margin-top:10px; padding-left:12px; border-left:2px solid ${PALETTE.border};` : ""}">
+      <div style="${isReply ? `margin-left:${indentPx}px; margin-top:10px; padding-left:12px; border-left:2px solid ${PALETTE.border};` : ""}">
         <div id="community-post-${post.id}" style="padding:14px; background:${isReply ? PALETTE.stone : PALETTE.panel2}; border:2px solid ${PALETTE.border};">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
               ${playerAvatarImg(author, 22, 18)}
               <span class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">${esc(displayName(author))}</span>
               <span style="font-size:13px; color:${PALETTE.textDim};">${timeAgo(post.created_at)}${post.edited_at ? " (edited)" : ""}</span>
-              ${post.visibility && post.visibility !== "all" ? visibilityBadge(post.visibility) : ""}
+              ${visibilityBadge(post.visibility || "all")}
             </div>
             ${canEditOrDelete && !isEditing ? `
               <div style="display:flex; gap:6px;">
@@ -2088,13 +2107,13 @@
               <button class="qb-btn qb-community-cancel-edit" style="${btn("cancel", { color: PALETTE.stone, fontSize: 9, padding: "8px 12px" })}">cancel</button>
             </div>
           ` : `
-            <div style="font-size:18px; color:${PALETTE.text}; line-height:1.4; white-space:pre-wrap;">${esc(post.message)}</div>
+            <div style="font-size:18px; color:${PALETTE.text}; line-height:1.4; white-space:pre-wrap;">${formatCommunityMessage(post.message)}</div>
             <div style="margin-top:10px; display:flex; align-items:center; gap:14px;">
               <button class="qb-btn qb-community-like" data-id="${post.id}" ${me ? "" : "disabled"} style="${btn("like", { color: liked ? PALETTE.danger : PALETTE.stone, textColor: liked ? "#1a1d17" : PALETTE.text, fontSize: 9, padding: "6px 10px", disabled: !me })}">${liked ? "♥" : "♡"} ${likeCount}</button>
-              ${!isReply && me ? `<button class="qb-btn qb-community-reply-toggle" data-id="${post.id}" style="${btn("reply", { color: PALETTE.stone, fontSize: 9, padding: "6px 10px" })}">${replyOpenId === post.id ? "cancel" : "reply"}</button>` : ""}
+              ${me ? `<button class="qb-btn qb-community-reply-toggle" data-id="${post.id}" data-target="${esc(post.username)}" style="${btn("reply", { color: PALETTE.stone, fontSize: 9, padding: "6px 10px" })}">${replyOpenId === post.id ? "cancel" : "reply"}</button>` : ""}
             </div>
           `}
-          ${!isReply && replyOpenId === post.id ? `
+          ${replyOpenId === post.id ? `
             <div style="margin-top:12px; padding-top:12px; border-top:2px solid ${PALETTE.border};">
               <textarea id="qb-reply-input-${post.id}" class="qb-textarea" rows="2" maxlength="500" placeholder="write a reply...">${esc(replyForm.message)}</textarea>
               <div style="margin-top:8px;">
@@ -2103,9 +2122,16 @@
             </div>
           ` : ""}
         </div>
-        ${replies.length ? replies.map(r => communityPostCard(r, true)).join("") : ""}
+        ${replies.length ? replies.map(r => communityPostCard(r, depth + 1)).join("") : ""}
       </div>
     `;
+  }
+
+  // Renders a community post's message text, turning any leading/inline @Name mention
+  // into a highlighted span so replies visually show who they're addressed to.
+  function formatCommunityMessage(message) {
+    const escaped = esc(message);
+    return escaped.replace(/(^|\s)(@[A-Za-z0-9_]{2,32})/g, (m, pre, handle) => `${pre}<span style="color:${PALETTE.blue}; font-weight:bold;">${handle}</span>`);
   }
 
   function render() {
