@@ -2007,6 +2007,14 @@
       }));
       root.querySelectorAll(".qb-community-save-edit").forEach(b => b.addEventListener("click", () => saveEditCommunity(b.dataset.id)));
       root.querySelectorAll(".qb-community-cancel-edit").forEach(b => b.addEventListener("click", cancelEditCommunity));
+      root.querySelectorAll(".qb-mention").forEach(el => el.addEventListener("click", () => {
+        const username = el.dataset.username;
+        tab = "search";
+        searchTerm = username;
+        searchedPlayer = players.find(p => p.username === username);
+        searchResults = searchedPlayer ? [searchedPlayer] : [];
+        render();
+      }));
       if (me) {
         const ci = document.getElementById("qb-community-input");
         if (ci) ci.addEventListener("input", e => { communityForm.message = e.target.value; });
@@ -2128,10 +2136,20 @@
   }
 
   // Renders a community post's message text, turning any leading/inline @Name mention
-  // into a highlighted span so replies visually show who they're addressed to.
+  // into a highlighted, clickable span (when it matches a real player) that opens their profile.
   function formatCommunityMessage(message) {
     const escaped = esc(message);
-    return escaped.replace(/(^|\s)(@[A-Za-z0-9_]{2,32})/g, (m, pre, handle) => `${pre}<span style="color:${PALETTE.blue}; font-weight:bold;">${handle}</span>`);
+    return escaped.replace(/(^|\s)(@[A-Za-z0-9_]{2,32})/g, (m, pre, handle) => {
+      const name = handle.slice(1); // drop the @
+      const match = players.find(p =>
+        p.username.toLowerCase() === name.toLowerCase() ||
+        (p.nickname && p.nickname.trim().toLowerCase() === name.toLowerCase())
+      );
+      if (match) {
+        return `${pre}<span class="qb-mention" data-username="${esc(match.username)}" style="color:${PALETTE.blue}; font-weight:bold; cursor:pointer; text-decoration:underline;">${handle}</span>`;
+      }
+      return `${pre}<span style="color:${PALETTE.blue}; font-weight:bold;">${handle}</span>`;
+    });
   }
 
   function render() {
