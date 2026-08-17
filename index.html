@@ -107,6 +107,11 @@
   let editingQuestId = null; // admin: quest currently being edited inline
   const editForm = { title: "", desc: "", reward: "", category: "general", difficulty: "easy" };
   let leaderboard = [];
+  let notifOpen = false;
+  let notifSettingsOpen = false;
+  let notifSeenIds = new Set(); // ids of notifications this player has already seen (persisted per-username)
+  const NOTIF_TYPE_LABELS = { quest: "quest completions", reply: "replies to your posts", like: "likes on your posts" };
+  let notifFilters = { quest: true, reply: true, like: true }; // which notification types the player wants to see
   const scoreForm = { username: "", score: "" };
   const rankForm = { username: "", rank: "white" };
   const stateForm = { username: "", state: "member" };
@@ -258,6 +263,8 @@
     await loadAll();
     loading = false;
     startHeartbeat();
+    loadNotifSeen();
+    loadNotifFilters();
     toast = null;
     authForm.username = ""; authForm.password = "";
     profileForm.avatarUrl = me.avatar_url || "";
@@ -281,6 +288,117 @@
   }
 
   const SESSION_KEY = "qb_session";
+  function notifKey(username) { return `qb_notif_seen_${username}`; }
+  function notifFiltersKey(username) { return `qb_notif_filters_${username}`; }
+  function loadNotifSeen() {
+    notifSeenIds = new Set();
+    if (!me) return;
+    try {
+      const raw = localStorage.getItem(notifKey(me.username));
+      if (raw) notifSeenIds = new Set(JSON.parse(raw));
+    } catch (e) { notifSeenIds = new Set(); }
+  }
+  function saveNotifSeen() {
+    if (!me) return;
+    try { localStorage.setItem(notifKey(me.username), JSON.stringify([...notifSeenIds])); } catch (e) { /* ignore */ }
+  }
+  function loadNotifFilters() {
+    notifFilters = { quest: true, reply: true, like: true };
+    if (!me) return;
+    try {
+      const raw = localStorage.getItem(notifFiltersKey(me.username));
+      if (raw) notifFilters = Object.assign({}, notifFilters, JSON.parse(raw));
+    } catch (e) { /* keep defaults */ }
+  }
+  function saveNotifFilters() {
+    if (!me) return;
+    try { localStorage.setItem(notifFiltersKey(me.username), JSON.stringify(notifFilters)); } catch (e) { /* ignore */ }
+  }
+  // Builds the current list of notifications for the signed-in player:
+  // quests they posted that have been completed, replies to their community posts,
+  // and likes on their community posts. Each entry carries a targetId used to jump
+  // straight to the relevant quest/post when the player clicks it.
+  function computeNotifications() {
+    if (!me) return [];
+    const list = [];
+    quests.filter(q => q.poster === me.username && q.completed).forEach(q => {
+      list.push({
+        id: `quest-${q.id}`, type: "quest", time: q.created_at, targetId: q.id,
+        text: `your quest "${esc(q.title)}" was completed${q.claimed_by ? ` by ${esc(displayName(players.find(p => p.username === q.claimed_by) || q.claimed_by))}` : ""}.`
+      });
+    });
+    communityPosts.filter(p => p.parent_id && p.username !== me.username).forEach(p => {
+      const parent = communityPosts.find(x => x.id === p.parent_id);
+      if (parent && parent.username === me.username) {
+        const author = players.find(pl => pl.username === p.username) || p.username;
+        list.push({
+          id: `reply-${p.id}`, type: "reply", time: p.created_at, targetId: parent.id,
+          text: `${esc(displayName(author))} replied to your post: "${esc(p.message.length > 60 ? p.message.slice(0, 60) + "…" : p.message)}"`
+        });
+      }
+    });
+    communityLikes.filter(l => l.username !== me.username).forEach(l => {
+      const post = communityPosts.find(p => p.id === l.post_id);
+      if (post && post.username === me.username) {
+        const liker = players.find(pl => pl.username === l.username) || l.username;
+        list.push({
+          id: `like-${l.post_id}-${l.username}`, type: "like", time: post.created_at, targetId: post.id,
+          text: `${esc(displayName(liker))} liked your post: "${esc(post.message.length > 60 ? post.message.slice(0, 60) + "…" : post.message)}"`
+        });
+      }
+    });
+    list.sort((a, b) => new Date(b.time) - new Date(a.time));
+    return list;
+  }
+  function visibleNotifications() {
+    return computeNotifications().filter(n => notifFilters[n.type]);
+  }
+  function unreadNotifCount() {
+    return visibleNotifications().filter(n => !notifSeenIds.has(n.id)).length;
+  }
+  function toggleNotifs() {
+    notifOpen = !notifOpen;
+    if (!notifOpen) notifSettingsOpen = false;
+    if (notifOpen) {
+      // opening the panel marks everything currently visible as read
+      visibleNotifications().forEach(n => notifSeenIds.add(n.id));
+      saveNotifSeen();
+    }
+    render();
+  }
+  function toggleNotifSettings(e) {
+    if (e) e.stopPropagation();
+    notifSettingsOpen = !notifSettingsOpen;
+    render();
+  }
+  function setNotifFilter(type, enabled) {
+    notifFilters[type] = enabled;
+    saveNotifFilters();
+    render();
+  }
+  // Jump to the quest or community post a notification refers to.
+  function goToNotification(type, targetId) {
+    notifOpen = false;
+    notifSettingsOpen = false;
+    if (type === "quest") {
+      tab = "board";
+      filterCategory = "all";
+    } else {
+      tab = "community";
+    }
+    render();
+    setTimeout(() => {
+      const elId = type === "quest" ? `quest-${targetId}` : `community-post-${targetId}`;
+      const el = document.getElementById(elId);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      const prevOutline = el.style.outline;
+      const prevOffset = el.style.outlineOffset;
+      el.style.outline = `3px solid ${PALETTE.gold}`;
+      el.style.outlineOffset = "3px";
+      setTimeout(() => { el.style.outline = prevOutline; el.style.outlineOffset = prevOffset; }, 1800);
+    }, 60);
+  }
   function saveSession() {
     try {
       if (me) localStorage.setItem(SESSION_KEY, JSON.stringify({ username: me.username, session_token: me.session_token }));
@@ -295,6 +413,8 @@
     if (me) await sb.rpc("qb_set_status", { p_username: me.username, p_session_token: me.session_token, p_status: "offline" });
     me = null;
     clearSession();
+    notifOpen = false; notifSettingsOpen = false; notifSeenIds = new Set();
+    lightboxPhoto = null; uploadingProofId = null;
     authForm.username = ""; authForm.password = "";
     render();
   }
@@ -328,6 +448,75 @@
     if (error) { showToast("couldn't complete: " + error.message); return; }
     await loadAll(); render();
   }
+
+  // Shrinks an uploaded image down to a reasonable size/quality so proof photos
+  // don't blow up the database — capped at 900px on the long edge, JPEG @ 0.72.
+  function compressImageFile(file, maxDim, quality) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          let w = img.width, h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) { h = Math.round(h * (maxDim / w)); w = maxDim; }
+            else { w = Math.round(w * (maxDim / h)); h = maxDim; }
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        };
+        img.onerror = () => reject(new Error("couldn't read that file as an image."));
+        img.src = reader.result;
+      };
+      reader.onerror = () => reject(new Error("couldn't read that file."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  let uploadingProofId = null; // quest id currently mid-upload, to disable double submits
+  let lightboxPhoto = null; // dataURL of a proof photo currently shown full-size
+
+  async function uploadQuestProof(id, file) {
+    if (!file) return;
+    if (!/^image\//.test(file.type)) return showToast("please upload an image file.");
+    uploadingProofId = id; render();
+    let dataUrl;
+    try {
+      dataUrl = await compressImageFile(file, 900, 0.72);
+    } catch (e) {
+      uploadingProofId = null;
+      showToast(e.message || "couldn't process that image.");
+      render();
+      return;
+    }
+    let error;
+    try {
+      ({ error } = await sb.from("quests").update({ proof_photo: dataUrl }).eq("id", id).eq("claimed_by", me.username));
+    } catch (e) { error = e; }
+    uploadingProofId = null;
+    if (error) {
+      const m = error.message || "";
+      showToast(
+        m.includes("does not exist") || m.includes("proof_photo")
+          ? "proof photos need a small database update first — see the setup note below the app."
+          : "couldn't upload proof: " + m
+      );
+      render();
+      return;
+    }
+    showToast("proof photo uploaded!", "gold");
+    await loadAll(); render();
+  }
+
+  async function removeQuestProof(id) {
+    const { error } = await sb.from("quests").update({ proof_photo: null }).eq("id", id).eq("claimed_by", me.username);
+    if (error) { showToast("couldn't remove photo: " + error.message); return; }
+    await loadAll(); render();
+  }
+
   async function deleteQuest(id) {
     if (isAdmin()) {
       const { error } = await sb.rpc("qb_admin_delete_quest", { p_username: me.username, p_session_token: me.session_token, p_quest_id: id });
@@ -350,13 +539,26 @@
   }
   async function saveEditQuest(id) {
     if (!editForm.title.trim() || !editForm.reward.trim()) return showToast("quest needs a title and a prize.");
-    const { error } = await sb.rpc("qb_admin_update_quest", {
-      p_username: me.username, p_session_token: me.session_token, p_quest_id: id,
-      p_title: editForm.title.trim(), p_description: editForm.desc.trim(), p_reward: editForm.reward.trim(),
-      p_category: editForm.category, p_difficulty: editForm.difficulty
-    });
+    const q = quests.find(x => x.id === id);
+    const isMine = q && me && q.poster === me.username;
+    let error;
+    if (isAdmin() && !isMine) {
+      // Admin editing someone else's quest goes through the privileged RPC.
+      ({ error } = await sb.rpc("qb_admin_update_quest", {
+        p_username: me.username, p_session_token: me.session_token, p_quest_id: id,
+        p_title: editForm.title.trim(), p_description: editForm.desc.trim(), p_reward: editForm.reward.trim(),
+        p_category: editForm.category, p_difficulty: editForm.difficulty
+      }));
+    } else {
+      // Quest owner editing their own quest — same pattern as their direct delete.
+      ({ error } = await sb.from("quests").update({
+        title: editForm.title.trim(), description: editForm.desc.trim(), reward: editForm.reward.trim(),
+        category: editForm.category, difficulty: editForm.difficulty
+      }).eq("id", id).eq("poster", me.username));
+    }
     if (error) { showToast("couldn't save: " + error.message); return; }
     editingQuestId = null;
+    showToast("quest updated.", "gold");
     await loadAll(); render();
   }
 
@@ -986,8 +1188,8 @@
 
     if (editingQuestId === q.id) {
       return `
-        <div style="background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:18px;">
-          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:12px;">editing (admin)</div>
+        <div id="quest-${q.id}" style="background:${PALETTE.panel}; border:3px solid ${PALETTE.gold}; padding:18px;">
+          <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold}; margin-bottom:12px;">${isMine ? "editing your quest" : "editing (admin)"}</div>
           <input id="qb-edit-title-${q.id}" class="qb-input" maxlength="60" value="${esc(editForm.title)}" style="margin-bottom:10px;" />
           <textarea id="qb-edit-desc-${q.id}" class="qb-textarea" rows="2" maxlength="300" style="margin-bottom:10px;">${esc(editForm.desc)}</textarea>
           <input id="qb-edit-reward-${q.id}" class="qb-input" maxlength="80" value="${esc(editForm.reward)}" style="margin-bottom:10px;" />
@@ -1008,7 +1210,7 @@
     }
 
     return `
-      <div style="background:${q.completed ? PALETTE.panel2 : PALETTE.panel}; border:3px solid ${q.completed ? PALETTE.emeraldDark : PALETTE.border}; padding:18px; opacity:${q.completed ? 0.6 : 1};">
+      <div id="quest-${q.id}" style="background:${q.completed ? PALETTE.panel2 : PALETTE.panel}; border:3px solid ${q.completed ? PALETTE.emeraldDark : PALETTE.border}; padding:18px; opacity:${q.completed ? 0.6 : 1};">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
           <div style="flex:1; min-width:200px;">
             <div style="display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;">
@@ -1023,6 +1225,12 @@
               </div>
               ${(() => { const pp = players.find(pl => pl.username === q.poster); return pp ? rankBadge(pp.rank) + stateBadge(pp.state) : ""; })()}
             </div>
+            ${q.proof_photo ? `
+              <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+                <img src="${q.proof_photo}" class="qb-proof-thumb" data-photo="${q.id}" width="64" height="64" style="object-fit:cover; border:2px solid ${PALETTE.gold}; cursor:pointer; image-rendering:auto;" alt="proof photo" />
+                <span style="font-size:13px; color:${PALETTE.textDim};">proof photo submitted — click to view</span>
+              </div>
+            ` : ""}
           </div>
           <div style="background:${PALETTE.netherite}; border:2px solid #000; padding:8px 12px; min-width:120px; text-align:center;">
             <div class="qb-pixel" style="font-size:7px; color:${PALETTE.gold}; margin-bottom:4px;">prize</div>
@@ -1032,7 +1240,15 @@
         <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;">
           ${!q.completed && !q.claimed_by && !isMine ? `<button class="qb-btn qb-claim" data-id="${q.id}" style="${btn("claim", { fontSize: 9, padding: "8px 12px" })}">claim quest</button>` : ""}
           ${!q.completed && claimedByMe ? `<button class="qb-btn qb-unclaim" data-id="${q.id}" style="${btn("drop", { color: PALETTE.stone, textColor: PALETTE.text, fontSize: 9, padding: "8px 12px" })}">drop claim</button>` : ""}
+          ${!q.completed && claimedByMe ? `
+            <label class="qb-btn qb-proof-upload-label" style="${btn(uploadingProofId === q.id ? "uploading..." : (q.proof_photo ? "change proof photo" : "upload proof photo"), { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })} display:inline-flex; align-items:center; position:relative; ${uploadingProofId === q.id ? "pointer-events:none;" : ""}">
+              ${uploadingProofId === q.id ? "uploading..." : (q.proof_photo ? "change proof photo" : "upload proof photo")}
+              <input type="file" accept="image/*" class="qb-proof-upload-input" data-id="${q.id}" style="position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;" ${uploadingProofId === q.id ? "disabled" : ""} />
+            </label>
+          ` : ""}
+          ${!q.completed && claimedByMe && q.proof_photo ? `<button class="qb-btn qb-proof-remove" data-id="${q.id}" style="${btn("remove photo", { color: PALETTE.danger, fontSize: 9, padding: "8px 12px" })}">remove photo</button>` : ""}
           ${!q.completed && isMine && q.claimed_by ? `<button class="qb-btn qb-complete" data-id="${q.id}" style="${btn("complete", { color: PALETTE.gold, fontSize: 9, padding: "8px 12px" })}">mark complete & pay out</button>` : ""}
+          ${!q.completed && isMine ? `<button class="qb-btn qb-admin-edit" data-id="${q.id}" style="${btn("edit", { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })}">edit</button>` : ""}
           ${admin && !isMine ? `<button class="qb-btn qb-admin-edit" data-id="${q.id}" style="${btn("edit (admin)", { color: PALETTE.blue, fontSize: 9, padding: "8px 12px" })}">edit (admin)</button>` : ""}
           ${isMine || admin ? `<button class="qb-btn qb-delete" data-id="${q.id}" style="${btn(admin && !isMine ? "delete (admin)" : "delete", { color: PALETTE.danger, fontSize: 9, padding: "8px 12px" })}">${admin && !isMine ? "delete (admin)" : "delete"}</button>` : ""}
         </div>
@@ -1115,6 +1331,55 @@
     `;
   }
 
+  function notifBellHtml() {
+    if (!me) return "";
+    const notifs = visibleNotifications();
+    const unread = notifs.filter(n => !notifSeenIds.has(n.id)).length;
+    return `
+      <div style="position:fixed; top:16px; right:16px; z-index:1000;">
+        <button id="qb-notif-bell" class="qb-btn" title="notifications" style="
+          position:relative; background:${PALETTE.panel2}; color:${PALETTE.text}; border-color:#000;
+          font-size:16px; padding:9px 11px; line-height:1;
+        ">🔔${unread > 0 ? `<span style="position:absolute; top:-8px; right:-8px; background:${PALETTE.danger}; color:#fff; border:2px solid #000; border-radius:50%; min-width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-family:'Press Start 2P',monospace; font-size:9px; padding:0 3px;">${unread > 9 ? "9+" : unread}</span>` : ""}</button>
+        ${notifOpen ? `
+          <div id="qb-notif-panel" style="position:absolute; top:calc(100% + 8px); right:0; width:310px; max-height:440px; overflow-y:auto; background:${PALETTE.panel}; border:3px solid ${PALETTE.border}; box-shadow:4px 4px 0 rgba(0,0,0,0.5);">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border-bottom:2px solid ${PALETTE.border};">
+              <div class="qb-pixel" style="font-size:9px; color:${PALETTE.gold};">notifications</div>
+              <button id="qb-notif-settings-btn" class="qb-btn" title="filter notifications" style="background:${notifSettingsOpen ? PALETTE.blue : PALETTE.stone}; color:${notifSettingsOpen ? "#1a1d17" : PALETTE.text}; border-color:#000; font-size:11px; padding:5px 8px;">⚙</button>
+            </div>
+            ${notifSettingsOpen ? `
+              <div style="padding:12px 14px; border-bottom:2px solid ${PALETTE.border}; background:${PALETTE.panel2};">
+                <div style="font-size:13px; color:${PALETTE.textDim}; margin-bottom:8px;">show notifications for:</div>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                  ${Object.keys(NOTIF_TYPE_LABELS).map(type => `
+                    <label style="display:flex; align-items:center; gap:8px; font-size:16px; color:${PALETTE.text}; cursor:pointer;">
+                      <input type="checkbox" class="qb-notif-filter-cb" data-type="${type}" ${notifFilters[type] ? "checked" : ""} style="width:16px; height:16px; cursor:pointer;" />
+                      ${NOTIF_TYPE_LABELS[type]}
+                    </label>
+                  `).join("")}
+                </div>
+              </div>
+            ` : ""}
+            ${notifs.length === 0 ? `<div style="padding:16px 14px; font-size:15px; color:${PALETTE.textDim};">nothing yet — quest completions, replies and likes on your posts show up here.</div>` : `
+              <div style="display:flex; flex-direction:column;">
+                ${notifs.map(n => `
+                  <div class="qb-notif-item" data-type="${n.type}" data-target="${esc(n.targetId)}" style="padding:12px 14px; border-bottom:1px solid ${PALETTE.border}; display:flex; gap:8px; align-items:flex-start; cursor:pointer; ${notifSeenIds.has(n.id) ? "" : `background:${PALETTE.panel2};`}">
+                    <span style="font-size:16px; line-height:1.2;">${n.type === "quest" ? "🏆" : n.type === "like" ? "♥" : "💬"}</span>
+                    <div>
+                      <div style="font-size:15px; color:${PALETTE.text}; line-height:1.4;">${n.text}</div>
+                      <div style="font-size:12px; color:${PALETTE.textDim}; margin-top:2px;">${timeAgo(n.time)}</div>
+                    </div>
+                  </div>
+                `).join("")}
+              </div>
+            `}
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }
+
+
   function renderMain() {
     const myStatus = me ? me.status : "online";
     const visibleQuests = filterCategory === "all" ? quests : quests.filter(q => q.category === filterCategory);
@@ -1129,6 +1394,7 @@
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px; border-bottom:3px solid ${PALETTE.border}; padding-bottom:16px;">
         <div class="qb-pixel" style="font-size:18px; color:${PALETTE.emerald};">LAW</div>
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          ${notifBellHtml()}
           <span class="qb-dot" style="background:${STATUS_COLOR[myStatus]};"></span>
           <select id="qb-status-select" class="qb-select" style="width:auto; font-size:14px; padding:6px 8px;">
             <option value="online" ${myStatus === "online" ? "selected" : ""}>online</option>
@@ -1472,9 +1738,29 @@
           `;
         })() : ""}
       </div>
+      ${lightboxPhoto ? `
+        <div id="qb-lightbox" style="position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:2000; display:flex; align-items:center; justify-content:center; padding:2rem; cursor:zoom-out;">
+          <img src="${lightboxPhoto}" style="max-width:100%; max-height:100%; border:4px solid ${PALETTE.gold}; box-shadow:0 0 0 4px #000;" alt="proof photo full size" />
+        </div>
+      ` : ""}
     `;
 
     document.getElementById("qb-switch-btn").addEventListener("click", logout);
+    const notifBell = document.getElementById("qb-notif-bell");
+    if (notifBell) notifBell.addEventListener("click", e => { e.stopPropagation(); toggleNotifs(); });
+    const notifPanel = document.getElementById("qb-notif-panel");
+    if (notifPanel) notifPanel.addEventListener("click", e => e.stopPropagation());
+    const notifSettingsBtn = document.getElementById("qb-notif-settings-btn");
+    if (notifSettingsBtn) notifSettingsBtn.addEventListener("click", toggleNotifSettings);
+    const lightbox = document.getElementById("qb-lightbox");
+    if (lightbox) lightbox.addEventListener("click", () => { lightboxPhoto = null; render(); });
+    root.querySelectorAll(".qb-notif-filter-cb").forEach(cb => cb.addEventListener("change", e => {
+      e.stopPropagation();
+      setNotifFilter(cb.dataset.type, cb.checked);
+    }));
+    root.querySelectorAll(".qb-notif-item").forEach(item => item.addEventListener("click", () => {
+      goToNotification(item.dataset.type, item.dataset.target);
+    }));
     document.getElementById("qb-status-select").addEventListener("change", e => setStatus(e.target.value));
     document.getElementById("qb-tab-board").addEventListener("click", () => { tab = "board"; toast = null; render(); });
     document.getElementById("qb-tab-post").addEventListener("click", () => { tab = "post"; toast = null; render(); });
@@ -1507,6 +1793,14 @@
       root.querySelectorAll(".qb-claim").forEach(b => b.addEventListener("click", () => claimQuest(b.dataset.id)));
       root.querySelectorAll(".qb-unclaim").forEach(b => b.addEventListener("click", () => unclaimQuest(b.dataset.id)));
       root.querySelectorAll(".qb-complete").forEach(b => b.addEventListener("click", () => completeQuest(b.dataset.id)));
+      root.querySelectorAll(".qb-proof-upload-input").forEach(inp => inp.addEventListener("change", e => {
+        uploadQuestProof(inp.dataset.id, e.target.files && e.target.files[0]);
+      }));
+      root.querySelectorAll(".qb-proof-remove").forEach(b => b.addEventListener("click", () => removeQuestProof(b.dataset.id)));
+      root.querySelectorAll(".qb-proof-thumb").forEach(img => img.addEventListener("click", () => {
+        lightboxPhoto = img.getAttribute("src");
+        render();
+      }));
       root.querySelectorAll(".qb-delete").forEach(b => b.addEventListener("click", () => deleteQuest(b.dataset.id)));
       root.querySelectorAll(".qb-admin-edit").forEach(b => b.addEventListener("click", () => {
         const q = quests.find(x => x.id === b.dataset.id);
@@ -1672,7 +1966,7 @@
     const replies = isReply ? [] : communityReplies(post.id);
     return `
       <div style="${isReply ? `margin-left:26px; margin-top:10px; padding-left:12px; border-left:2px solid ${PALETTE.border};` : ""}">
-        <div style="padding:14px; background:${isReply ? PALETTE.stone : PALETTE.panel2}; border:2px solid ${PALETTE.border};">
+        <div id="community-post-${post.id}" style="padding:14px; background:${isReply ? PALETTE.stone : PALETTE.panel2}; border:2px solid ${PALETTE.border};">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
               ${playerAvatarImg(author, 22, 18)}
@@ -1725,6 +2019,10 @@
     }
   }
 
+  window.addEventListener("click", () => {
+    if (notifOpen) { notifOpen = false; render(); }
+  });
+
   window.addEventListener("beforeunload", () => {
     if (me) {
       navigator.sendBeacon(
@@ -1757,6 +2055,8 @@
     await loadAll();
     loading = false;
     startHeartbeat();
+    loadNotifSeen();
+    loadNotifFilters();
     render();
   }
 
